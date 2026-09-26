@@ -1,0 +1,22 @@
+# Secrets — never commit
+.env
+.secrets/
+
+# Build output
+target/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+
+# IDE / OS
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
