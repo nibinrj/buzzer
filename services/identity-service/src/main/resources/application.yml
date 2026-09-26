@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: identity-service
+  datasource:
+    # Non-secret local defaults; the password has no default and must come from the environment.
+    url: ${IDENTITY_DB_URL:jdbc:postgresql://localhost:5432/identity_db}
+    username: ${IDENTITY_DB_USERNAME:identity_app}
+    password: ${IDENTITY_DB_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+server:
+  port: 8081
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
