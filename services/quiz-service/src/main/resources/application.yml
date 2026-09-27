@@ -1,6 +1,23 @@
 spring:
   application:
     name: quiz-service
+  datasource:
+    # Non-secret local defaults; the password has no default and must come from the environment.
+    url: ${QUIZ_DB_URL:jdbc:postgresql://localhost:5432/quiz_db}
+    username: ${QUIZ_DB_USERNAME:quiz_app}
+    password: ${QUIZ_DB_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+quiz:
+  security:
+    jwt:
+      # identity-service's public keys. Fetched on the first request, so quiz-service starts even
+      # while identity is down. In AWS this comes from the environment (the service's internal address).
+      jwk-set-uri: ${IDENTITY_JWKS_URI:http://localhost:8081/.well-known/jwks.json}
+      issuer: buzzer-identity
 
 server:
   port: 8082

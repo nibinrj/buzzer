@@ -43,6 +43,12 @@ class UserTest {
     }
 
     @Test
+    void normalizeEmailIsTheSameRuleTheConstructorApplies() {
+        assertThat(User.normalizeEmail("  Host@Test.DEV ")).isEqualTo("host@test.dev");
+        assertThatThrownBy(() -> User.normalizeEmail(" ")).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void rejectsBlankEmail() {
         assertThatThrownBy(() -> User.register("  ", HASH, Set.of(Role.HOST), NOW))
                 .isInstanceOf(IllegalArgumentException.class)

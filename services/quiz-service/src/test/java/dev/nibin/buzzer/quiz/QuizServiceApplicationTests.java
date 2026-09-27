@@ -1,9 +1,9 @@
 package dev.nibin.buzzer.quiz;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
 
-@SpringBootTest
+/** Smoke test: the full context starts. Shares the context of the other @ApiIntegrationTest classes. */
+@ApiIntegrationTest
 class QuizServiceApplicationTests {
 
     @Test

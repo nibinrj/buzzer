@@ -1,14 +1,14 @@
 package dev.nibin.buzzer.identity.infrastructure.persistence;
 
-import dev.nibin.buzzer.identity.TestcontainersConfiguration;
 import dev.nibin.buzzer.identity.domain.Role;
 import dev.nibin.buzzer.identity.domain.User;
+import jakarta.persistence.EntityManagerFactory;
+import org.hibernate.SessionFactory;
+import org.hibernate.stat.Statistics;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
-import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.boot.jpa.test.autoconfigure.TestEntityManager;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.Instant;
@@ -20,13 +20,8 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Runs Flyway V1 against a real PostgreSQL 16, then Hibernate validates the entity against it.
- * replace = NONE: keep the Testcontainers database instead of swapping in an embedded one.
- */
-@DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(TestcontainersConfiguration.class)
+/** Flyway V1 against a real PostgreSQL 16, then Hibernate validates the entity against it. */
+@PersistenceTest
 class UserJpaRepositoryTest {
 
     // Postgres stores microseconds; truncate so the round-trip comparison is exact.
@@ -39,6 +34,17 @@ class UserJpaRepositoryTest {
 
     @Autowired
     private TestEntityManager entityManager;
+
+    @Autowired
+    private EntityManagerFactory entityManagerFactory;
+
+    private Statistics statistics;
+
+    @BeforeEach
+    void resetStatistics() {
+        statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        statistics.clear();
+    }
 
     @Test
     void savesAndReloadsUserWithRoles() {
@@ -56,14 +62,49 @@ class UserJpaRepositoryTest {
     }
 
     @Test
-    void findsByEmail() {
-        User user = User.register("player@test.dev", HASH, Set.of(Role.PLAYER), NOW);
+    void savingANewUserInsertsWithoutASelectFirst() {
+        UserJpaEntity entity = UserMapper.toEntity(User.register("new@test.dev", HASH, Set.of(Role.HOST), NOW));
+        assertThat(entity.isNew()).isTrue();
+
+        UserJpaEntity saved = repository.saveAndFlush(entity);
+
+        // persist() keeps the instance; merge() would have returned a managed copy after a SELECT.
+        assertThat(saved).isSameAs(entity);
+        assertThat(entity.isNew()).isFalse();
+        // Exactly two statements: INSERT users, INSERT user_roles. No SELECT.
+        assertThat(statistics.getPrepareStatementCount()).isEqualTo(2);
+    }
+
+    @Test
+    void loadedUserIsNotNew() {
+        User user = User.register("loaded@test.dev", HASH, Set.of(Role.HOST), NOW);
         repository.saveAndFlush(UserMapper.toEntity(user));
         entityManager.clear();
 
-        assertThat(repository.findByEmail("player@test.dev")).get()
-                .extracting(UserJpaEntity::getId).isEqualTo(user.id());
+        assertThat(repository.findById(user.id()).orElseThrow().isNew()).isFalse();
+    }
+
+    @Test
+    void findsByEmailWithRolesInOneQuery() {
+        User user = User.register("player@test.dev", HASH, EnumSet.of(Role.PLAYER, Role.HOST), NOW);
+        repository.saveAndFlush(UserMapper.toEntity(user));
+        entityManager.clear();
+        statistics.clear();
+
+        UserJpaEntity found = repository.findByEmail("player@test.dev").orElseThrow();
+
+        assertThat(found.getId()).isEqualTo(user.id());
+        assertThat(found.getRoles()).containsExactlyInAnyOrder(Role.PLAYER, Role.HOST);
+        assertThat(statistics.getPrepareStatementCount()).isEqualTo(1);
         assertThat(repository.findByEmail("nobody@test.dev")).isEmpty();
+    }
+
+    @Test
+    void existsByEmail() {
+        repository.saveAndFlush(UserMapper.toEntity(User.register("exists@test.dev", HASH, Set.of(Role.HOST), NOW)));
+
+        assertThat(repository.existsByEmail("exists@test.dev")).isTrue();
+        assertThat(repository.existsByEmail("nobody@test.dev")).isFalse();
     }
 
     @Test

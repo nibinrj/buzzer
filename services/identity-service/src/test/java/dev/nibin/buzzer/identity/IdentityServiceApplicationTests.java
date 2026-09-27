@@ -1,11 +1,9 @@
 package dev.nibin.buzzer.identity;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 
-@SpringBootTest
-@Import(TestcontainersConfiguration.class)
+/** Smoke test: the full context starts. Shares the context of the other @HttpIntegrationTest classes. */
+@HttpIntegrationTest
 class IdentityServiceApplicationTests {
 
     @Test

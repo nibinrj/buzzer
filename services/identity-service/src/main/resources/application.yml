@@ -11,6 +11,18 @@ spring:
       ddl-auto: validate
     open-in-view: false
 
+identity:
+  jwt:
+    # Spring resource locations (file:...), set per machine or container; see .env.example.
+    # No defaults: the service must not start without its signing keys.
+    private-key-location: ${IDENTITY_JWT_PRIVATE_KEY_LOCATION}
+    public-key-location: ${IDENTITY_JWT_PUBLIC_KEY_LOCATION}
+    issuer: buzzer-identity
+    access-token-ttl: 15m
+    guest-token-ttl: 3h
+    # Sliding: every refresh issues a new token valid for another 7 days.
+    refresh-token-ttl: 7d
+
 server:
   port: 8081
 

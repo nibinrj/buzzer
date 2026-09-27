@@ -56,7 +56,8 @@ public final class User {
         return createdAt;
     }
 
-    private static String normalizeEmail(String email) {
+    /** The one email normalization rule; use it before looking a user up by email. */
+    public static String normalizeEmail(String email) {
         return requireNonBlank(email, "email").trim().toLowerCase(Locale.ROOT);
     }
 
