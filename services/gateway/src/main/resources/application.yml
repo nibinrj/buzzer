@@ -1,6 +1,96 @@
 spring:
   application:
     name: gateway
+  data:
+    redis:
+      # Non-secret local defaults; the password has no default and must come from the environment.
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD}
+  cloud:
+    gateway:
+      server:
+        webflux:
+          # Paths are forwarded unchanged: each service already serves its API under these prefixes.
+          # /internal/** is never routed, and InternalPathBlockingFilter 404s it before anything else runs.
+          #
+          # Every route is rate limited (token bucket in Redis). throw-on-limit turns "over the limit" into an
+          # error, so the 429 goes through ProblemDetailExceptionHandler like every other gateway error.
+          routes:
+            # Anonymous endpoints (login, register, refresh, guest, JWKS): limited per client IP.
+            - id: identity
+              uri: ${IDENTITY_URI:http://localhost:8081}
+              predicates:
+                - Path=/api/auth/**,/.well-known/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@clientIpKeyResolver}"
+                    redis-rate-limiter.replenishRate: ${gateway.rate-limit.per-ip.replenish-rate}
+                    redis-rate-limiter.burstCapacity: ${gateway.rate-limit.per-ip.burst-capacity}
+                    throw-on-limit: true
+            - id: quiz
+              uri: ${QUIZ_URI:http://localhost:8082}
+              predicates:
+                - Path=/api/quizzes/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@userOrClientIpKeyResolver}"
+                    redis-rate-limiter.replenishRate: ${gateway.rate-limit.per-user.replenish-rate}
+                    redis-rate-limiter.burstCapacity: ${gateway.rate-limit.per-user.burst-capacity}
+                    throw-on-limit: true
+            # /ws/** uses the same http:// target: the gateway switches to ws:// when the request is a
+            # WebSocket upgrade. /api/sessions/join is public, so anonymous joins fall back to per-IP.
+            - id: session
+              uri: ${SESSION_URI:http://localhost:8083}
+              predicates:
+                - Path=/api/sessions/**,/ws/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@userOrClientIpKeyResolver}"
+                    redis-rate-limiter.replenishRate: ${gateway.rate-limit.per-user.replenish-rate}
+                    redis-rate-limiter.burstCapacity: ${gateway.rate-limit.per-user.burst-capacity}
+                    throw-on-limit: true
+            - id: scoring
+              uri: ${SCORING_URI:http://localhost:8084}
+              predicates:
+                - Path=/api/results/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@userOrClientIpKeyResolver}"
+                    redis-rate-limiter.replenishRate: ${gateway.rate-limit.per-user.replenish-rate}
+                    redis-rate-limiter.burstCapacity: ${gateway.rate-limit.per-user.burst-capacity}
+                    throw-on-limit: true
+
+gateway:
+  security:
+    jwt:
+      # identity-service's public keys. Fetched on the first authenticated request, so the gateway
+      # starts even while identity is down. Same variable as quiz-service.
+      jwk-set-uri: ${IDENTITY_JWKS_URI:http://localhost:8081/.well-known/jwks.json}
+      issuer: buzzer-identity
+  # Token buckets: replenish-rate = requests per second on average, burst-capacity = how many at once.
+  # Per IP is generous on purpose: a whole pub on one Wi-Fi shares one IP on quiz night.
+  # Override per environment, e.g. GATEWAY_RATE_LIMIT_PER_IP_BURST_CAPACITY.
+  rate-limit:
+    per-ip:
+      replenish-rate: 2
+      burst-capacity: 20
+    per-user:
+      replenish-rate: 10
+      burst-capacity: 20
+  client-ip:
+    # Proxies in front of the gateway that append to X-Forwarded-For. 0 locally (the TCP peer is the
+    # client); 1 behind the AWS ALB. Anything higher than reality lets clients choose their own IP.
+    trusted-proxies: 0
+  cors:
+    # Browser origins allowed to call the API. [*] = any port. Comma-separated in the environment:
+    # GATEWAY_CORS_ALLOWED_ORIGIN_PATTERNS=https://buzzer.example.com
+    allowed-origin-patterns:
+      - "http://localhost:[*]"
 
 server:
   port: 8080

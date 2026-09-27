@@ -63,6 +63,39 @@ class QuizApiTest {
         mvc.perform(get("/api/somethingelse").with(host(UUID.randomUUID()))).andExpect(status().isForbidden());
     }
 
+    // --- X-User-* headers are the gateway's hint for logs, never proof of identity ---
+
+    @Test
+    void identityHeadersWithoutATokenAre401() throws Exception {
+        UUID owner = UUID.randomUUID();
+        String quizId = createQuiz(owner, "Mine");
+
+        // A real owner's id and the right role: exactly what the gateway would set. Without a token it counts for nothing.
+        mvc.perform(get("/api/quizzes/" + quizId)
+                        .header("X-User-Id", owner.toString())
+                        .header("X-User-Roles", "HOST"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("WWW-Authenticate", startsWith("Bearer")));
+        mvc.perform(post("/api/quizzes")
+                        .header("X-User-Id", owner.toString())
+                        .header("X-User-Roles", "HOST")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title": "Sneaky"}"""))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void anIdentityHeaderCannotOverrideTheTokensSubject() throws Exception {
+        UUID alice = UUID.randomUUID();
+        String alicesQuiz = createQuiz(alice, "Alice's");
+
+        // Bob's valid token, Alice's id in the header: Bob is still Bob, and Alice's quiz doesn't exist for him.
+        mvc.perform(get("/api/quizzes/" + alicesQuiz).with(host(UUID.randomUUID()))
+                        .header("X-User-Id", alice.toString()))
+                .andExpect(status().isNotFound());
+    }
+
     // --- create, read, list ---
 
     @Test
