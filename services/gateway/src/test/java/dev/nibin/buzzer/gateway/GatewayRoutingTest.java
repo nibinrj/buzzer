@@ -28,6 +28,7 @@ class GatewayRoutingTest extends GatewayTestSupport {
                 Arguments.of("/api/quizzes", QUIZ),
                 Arguments.of("/api/quizzes/42/questions", QUIZ),
                 Arguments.of("/api/sessions/abc", SESSION),
+                // Only the exact handshake path /ws is public; anything below it still needs a token.
                 Arguments.of("/ws/info", SESSION),
                 Arguments.of("/api/results/abc", SCORING));
     }
@@ -49,7 +50,9 @@ class GatewayRoutingTest extends GatewayTestSupport {
                 Arguments.of(HttpMethod.POST, "/api/auth/login", IDENTITY),
                 Arguments.of(HttpMethod.POST, "/api/auth/guest", IDENTITY),
                 Arguments.of(HttpMethod.GET, JWKS_PATH, IDENTITY),
-                Arguments.of(HttpMethod.POST, "/api/sessions/join", SESSION));
+                Arguments.of(HttpMethod.POST, "/api/sessions/join", SESSION),
+                // A plain GET here; WebSocketProxyTest does the real upgrade.
+                Arguments.of(HttpMethod.GET, "/ws", SESSION));
     }
 
     @ParameterizedTest(name = "{0} {1}")

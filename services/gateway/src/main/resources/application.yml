@@ -28,6 +28,7 @@ spring:
                     key-resolver: "#{@clientIpKeyResolver}"
                     redis-rate-limiter.replenishRate: ${gateway.rate-limit.per-ip.replenish-rate}
                     redis-rate-limiter.burstCapacity: ${gateway.rate-limit.per-ip.burst-capacity}
+                    redis-rate-limiter.requestedTokens: ${gateway.rate-limit.per-ip.requested-tokens}
                     throw-on-limit: true
             - id: quiz
               uri: ${QUIZ_URI:http://localhost:8082}
@@ -39,9 +40,11 @@ spring:
                     key-resolver: "#{@userOrClientIpKeyResolver}"
                     redis-rate-limiter.replenishRate: ${gateway.rate-limit.per-user.replenish-rate}
                     redis-rate-limiter.burstCapacity: ${gateway.rate-limit.per-user.burst-capacity}
+                    redis-rate-limiter.requestedTokens: ${gateway.rate-limit.per-user.requested-tokens}
                     throw-on-limit: true
             # /ws/** uses the same http:// target: the gateway switches to ws:// when the request is a
-            # WebSocket upgrade. /api/sessions/join is public, so anonymous joins fall back to per-IP.
+            # WebSocket upgrade. /api/sessions/join and the /ws handshake are public, so they fall back to per-IP.
+            # Only the handshake is rate limited: STOMP frames on an open socket are not HTTP requests.
             - id: session
               uri: ${SESSION_URI:http://localhost:8083}
               predicates:
@@ -52,6 +55,7 @@ spring:
                     key-resolver: "#{@userOrClientIpKeyResolver}"
                     redis-rate-limiter.replenishRate: ${gateway.rate-limit.per-user.replenish-rate}
                     redis-rate-limiter.burstCapacity: ${gateway.rate-limit.per-user.burst-capacity}
+                    redis-rate-limiter.requestedTokens: ${gateway.rate-limit.per-user.requested-tokens}
                     throw-on-limit: true
             - id: scoring
               uri: ${SCORING_URI:http://localhost:8084}
@@ -63,6 +67,7 @@ spring:
                     key-resolver: "#{@userOrClientIpKeyResolver}"
                     redis-rate-limiter.replenishRate: ${gateway.rate-limit.per-user.replenish-rate}
                     redis-rate-limiter.burstCapacity: ${gateway.rate-limit.per-user.burst-capacity}
+                    redis-rate-limiter.requestedTokens: ${gateway.rate-limit.per-user.requested-tokens}
                     throw-on-limit: true
 
 gateway:
@@ -75,13 +80,17 @@ gateway:
   # Token buckets: replenish-rate = requests per second on average, burst-capacity = how many at once.
   # Per IP is generous on purpose: a whole pub on one Wi-Fi shares one IP on quiz night.
   # Override per environment, e.g. GATEWAY_RATE_LIMIT_PER_IP_BURST_CAPACITY.
+  # requested-tokens = what one request costs. 1 here. Raising it (with burst-capacity scaled to match) allows
+  # refill rates below 1 request per second, which whole-number replenish-rate can't express; the tests use that.
   rate-limit:
     per-ip:
       replenish-rate: 2
       burst-capacity: 20
+      requested-tokens: 1
     per-user:
       replenish-rate: 10
       burst-capacity: 20
+      requested-tokens: 1
   client-ip:
     # Proxies in front of the gateway that append to X-Forwarded-For. 0 locally (the TCP peer is the
     # client); 1 behind the AWS ALB. Anything higher than reality lets clients choose their own IP.

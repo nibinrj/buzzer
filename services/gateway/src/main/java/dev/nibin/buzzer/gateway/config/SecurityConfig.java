@@ -41,8 +41,12 @@ import java.util.List;
 @EnableConfigurationProperties({JwtVerificationProperties.class, CorsProperties.class})
 public class SecurityConfig {
 
-    /** Reachable without a token. Login/register/refresh/guest, the JWKS itself, and joining a session. */
-    static final String[] PUBLIC_PATHS = {"/api/auth/**", "/.well-known/**", "/api/sessions/join"};
+    /**
+     * Reachable without a token. Login/register/refresh/guest, the JWKS itself, joining a session, and the
+     * WebSocket handshake: a browser can't add an Authorization header to it, so session-service authenticates the
+     * connection itself, on the STOMP CONNECT frame that follows. Only the exact endpoint, not /ws/**.
+     */
+    static final String[] PUBLIC_PATHS = {"/api/auth/**", "/.well-known/**", "/api/sessions/join", "/ws"};
 
     @Bean
     SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {

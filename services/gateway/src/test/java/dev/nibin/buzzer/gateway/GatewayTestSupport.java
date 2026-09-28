@@ -48,20 +48,29 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Rate limiting runs against a real Redis (container), emptied before each test so every test starts with full
  * token buckets. Test buckets are small ({@link #BURST}) so a 429 takes only a few requests.
+ *
+ * <p>Each request costs {@link #TOKENS_PER_REQUEST} tokens and 1 token comes back per second, so a whole request
+ * refills only after a minute. With a cost of 1, a burst that happened to straddle a second boundary got a free
+ * token back (the limiter's Lua script counts time in whole seconds of Redis TIME), and the tests failed at random.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "gateway.rate-limit.per-ip.replenish-rate=1",
-        "gateway.rate-limit.per-ip.burst-capacity=" + GatewayTestSupport.BURST,
+        "gateway.rate-limit.per-ip.requested-tokens=" + GatewayTestSupport.TOKENS_PER_REQUEST,
+        "gateway.rate-limit.per-ip.burst-capacity=" + GatewayTestSupport.BURST * GatewayTestSupport.TOKENS_PER_REQUEST,
         "gateway.rate-limit.per-user.replenish-rate=1",
-        "gateway.rate-limit.per-user.burst-capacity=" + GatewayTestSupport.BURST})
+        "gateway.rate-limit.per-user.requested-tokens=" + GatewayTestSupport.TOKENS_PER_REQUEST,
+        "gateway.rate-limit.per-user.burst-capacity=" + GatewayTestSupport.BURST * GatewayTestSupport.TOKENS_PER_REQUEST})
 @Import(RedisTestcontainer.class)
 public abstract class GatewayTestSupport {
 
     protected static final String ISSUER = "buzzer-identity";
     protected static final String JWKS_PATH = "/.well-known/jwks.json";
 
-    /** Requests allowed at once per bucket in tests. Refill is 1 per second, far slower than a test runs. */
+    /** Requests allowed at once per bucket in tests. */
     protected static final int BURST = 3;
+
+    /** What one request costs in tests: at 1 token per second, a spent request comes back after a minute. */
+    protected static final int TOKENS_PER_REQUEST = 60;
 
     protected static final WireMockServer IDENTITY = started();
     protected static final WireMockServer QUIZ = started();
