@@ -8,8 +8,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Port: pushes what happened in a session to everyone connected to it. Today a STOMP implementation on this
- * instance's broker; a Redis pub/sub relay (several instances) can replace it without touching the use cases.
+ * Port: pushes what happened in a session to everyone connected to it, on whichever session-service instance their
+ * WebSocket is connected to. Implemented by a Redis pub/sub relay (infrastructure.redis.RedisRelayBroadcaster).
  * Called only after the change is committed, so nobody sees something that was then rolled back.
  */
 public interface SessionBroadcaster {

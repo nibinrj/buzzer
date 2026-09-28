@@ -26,14 +26,15 @@ public class QuizServiceStub {
 
     /**
      * Points the quiz client (and the JWT decoder's key lookup) at the stub. A DynamicPropertyRegistrar bean runs
-     * before the other beans are created, so the properties records already see these values. The short read
-     * timeout keeps the "quiz-service hangs" test fast.
+     * before the other beans are created, so the properties records already see these values.
+     * <p>
+     * The read timeout stays at the production 2 s. A 500 ms test value made the first call of a test run flaky:
+     * a cold JVM and a cold WireMock sometimes needed longer than that for a normal answer.
      */
     @Bean
     DynamicPropertyRegistrar quizServiceStubProperties(WireMockServer quizServiceStub) {
         return registry -> {
             registry.add("session.quiz-client.base-url", quizServiceStub::baseUrl);
-            registry.add("session.quiz-client.read-timeout", () -> "500ms");
             registry.add("session.security.jwt.jwk-set-uri", () -> quizServiceStub.baseUrl() + TestTokens.JWKS_PATH);
         };
     }

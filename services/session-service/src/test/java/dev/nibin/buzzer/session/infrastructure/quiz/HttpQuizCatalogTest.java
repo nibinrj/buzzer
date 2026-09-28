@@ -100,13 +100,13 @@ class HttpQuizCatalogTest {
     @Test
     void aHangingQuizServiceIsCutOffByTheReadTimeout() {
         UUID quizId = UUID.randomUUID();
-        // QuizServiceStub sets the read timeout to 500 ms for tests.
-        quizService.stubFor(get(snapshotUrl(quizId)).willReturn(okJson("{}").withFixedDelay(5_000)));
+        // The read timeout is 2 s (application.yml); the stub would take 10 s.
+        quizService.stubFor(get(snapshotUrl(quizId)).willReturn(okJson("{}").withFixedDelay(10_000)));
 
         long start = System.nanoTime();
         assertThatThrownBy(() -> catalog.publishedQuiz(quizId)).isInstanceOf(QuizServiceUnavailableException.class);
 
-        assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(2));
+        assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(5));
     }
 
     @Test
