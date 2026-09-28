@@ -92,6 +92,16 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- The outbox publisher's KafkaTemplate (Spring Kafka 4.1, kafka-clients 4.2; versions from the Boot BOM) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-kafka</artifactId>
+        </dependency>
+        <!-- The event records this service publishes (records only, no Spring) -->
+        <dependency>
+            <groupId>dev.nibin.buzzer</groupId>
+            <artifactId>shared-events</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -118,6 +128,12 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- A real Kafka-compatible broker for the outbox tests: the same Redpanda as docker-compose.yml -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-redpanda</artifactId>
             <scope>test</scope>
         </dependency>
         <!-- Core module (GenericContainer) for Redis: Testcontainers has no official Redis module. Version from the Boot BOM. -->

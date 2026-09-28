@@ -22,6 +22,7 @@ import java.util.regex.Pattern;
  * SUBSCRIBE /topic/sessions/{id}[/...]                  the session's host and its players
  * SUBSCRIBE /user/queue/...                             anyone connected (Spring routes it to that user only)
  * SEND      /app/sessions/{id}/start|next|reveal|end    the session's host
+ * SEND      /app/sessions/{id}/answer                   the session's players (not its host)
  * </pre>
  * Everything else is refused, notably a client SENDing straight to /topic/...: the simple broker would relay it
  * to every subscriber, so any player could broadcast a fake question.
@@ -33,6 +34,7 @@ public class DestinationAuthorizationInterceptor implements ChannelInterceptor {
 
     private static final Pattern SESSION_TOPIC = Pattern.compile("^/topic/sessions/([^/]+)(/.*)?$");
     private static final Pattern HOST_COMMAND = Pattern.compile("^/app/sessions/([^/]+)/(start|next|reveal|end)$");
+    private static final Pattern PLAYER_COMMAND = Pattern.compile("^/app/sessions/([^/]+)/answer$");
     private static final String USER_QUEUES = "/user/queue/";
 
     private final SessionAccess access;
@@ -72,9 +74,11 @@ public class DestinationAuthorizationInterceptor implements ChannelInterceptor {
         if (user == null || destination == null) {
             return false;
         }
-        return sessionId(HOST_COMMAND, destination)
-                .map(sessionId -> access.isHost(sessionId, userId(user)))
-                .orElse(false);
+        Optional<Boolean> hostCommand = sessionId(HOST_COMMAND, destination)
+                .map(sessionId -> access.isHost(sessionId, userId(user)));
+        Optional<Boolean> playerCommand = sessionId(PLAYER_COMMAND, destination)
+                .map(sessionId -> access.isPlayer(sessionId, userId(user)));
+        return hostCommand.or(() -> playerCommand).orElse(false);
     }
 
     private static void requireAllowed(boolean allowed, String action, StompHeaderAccessor accessor) {

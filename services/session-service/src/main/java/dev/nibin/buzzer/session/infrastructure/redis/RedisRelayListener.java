@@ -44,6 +44,8 @@ public class RedisRelayListener implements MessageListener {
             delivery.questionShown(relayed.questionShown());
         } else if (relayed.statusChanged() != null) {
             delivery.statusChanged(relayed.statusChanged());
+        } else if (relayed.answerRevealed() != null) {
+            delivery.answerRevealed(relayed.answerRevealed());
         } else {
             log.warn("Dropped an empty relay message");
         }

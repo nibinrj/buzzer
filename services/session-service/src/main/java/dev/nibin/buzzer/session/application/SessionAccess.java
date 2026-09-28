@@ -7,8 +7,8 @@ import org.springframework.stereotype.Service;
 import java.util.UUID;
 
 /**
- * Who belongs to a session, for the WebSocket destination checks. Asked once per SUBSCRIBE and per host
- * command, not per pushed message, so reading Postgres here is cheap enough.
+ * Who belongs to a session, for the WebSocket destination checks. Asked once per SUBSCRIBE, per host command and
+ * per answer, not per pushed message, so reading Postgres here is cheap enough.
  */
 @Service
 public class SessionAccess {
@@ -23,6 +23,11 @@ public class SessionAccess {
 
     public boolean isHost(UUID sessionId, UUID userId) {
         return sessions.findById(sessionId).filter(session -> session.hostId().equals(userId)).isPresent();
+    }
+
+    /** Someone who joined. The host is not a player of their own session. */
+    public boolean isPlayer(UUID sessionId, UUID userId) {
+        return players.find(sessionId, userId).isPresent();
     }
 
     /** The host, or someone who joined. */

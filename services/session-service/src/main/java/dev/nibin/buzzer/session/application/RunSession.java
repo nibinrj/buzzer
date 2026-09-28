@@ -1,5 +1,8 @@
 package dev.nibin.buzzer.session.application;
 
+import dev.nibin.buzzer.events.SessionEnded;
+import dev.nibin.buzzer.events.SessionStarted;
+import dev.nibin.buzzer.session.application.SessionBroadcaster.AnswerRevealed;
 import dev.nibin.buzzer.session.application.SessionBroadcaster.QuestionShown;
 import dev.nibin.buzzer.session.application.SessionBroadcaster.StatusChanged;
 import dev.nibin.buzzer.session.domain.LiveState;
@@ -17,7 +20,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * Use case: the host runs the game (start, next question, end). Every command has the same shape:
+ * Use case: the host runs the game (start, next question, reveal, end). Every command has the same shape:
  * <ol>
  *   <li>Transaction: lock the session row (the lock joins take too, so a join can't slip past a start), check
  *       the rule, write Postgres, then write Redis. Redis is written INSIDE the transaction on purpose: if Redis
@@ -34,20 +37,24 @@ public class RunSession {
     private final LiveStateRepository liveState;
     private final SessionBroadcaster broadcaster;
     private final TransactionOperations transaction;
+    private final EventOutbox outbox;
 
     public RunSession(SessionRepository sessions, LiveStateRepository liveState, SessionBroadcaster broadcaster,
-            TransactionOperations transaction) {
+            TransactionOperations transaction, EventOutbox outbox) {
         this.sessions = sessions;
         this.liveState = liveState;
         this.broadcaster = broadcaster;
         this.transaction = transaction;
+        this.outbox = outbox;
     }
 
-    /** LOBBY → IN_PROGRESS, and question 0 starts. */
+    /** LOBBY → IN_PROGRESS, and question 0 starts. SessionStarted goes to the outbox with the status change. */
     public void start(UUID sessionId, UUID hostId) {
         QuestionShown shown = inTransaction(() -> {
             Session started = lockedSessionHostedBy(sessionId, hostId).start();
             sessions.updateStatus(started);
+            outbox.sessionStarted(new SessionStarted(UUID.randomUUID(), sessionId, started.quizId(), hostId,
+                    started.questions().size(), liveState.serverTime().toEpochMilli(), SessionStarted.SCHEMA_VERSION));
             return showQuestion(started, 0);
         });
         broadcaster.statusChanged(new StatusChanged(sessionId, Session.Status.IN_PROGRESS));
@@ -71,11 +78,38 @@ public class RunSession {
         broadcaster.questionShown(shown);
     }
 
-    /** LOBBY or IN_PROGRESS → ENDED. */
+    /**
+     * The current question takes no more answers, and everyone is told its correct option. Nothing changes in
+     * Postgres; the transaction is still taken for the session row lock, so a reveal can't interleave with a next
+     * or an end (and close a question other than the one it read).
+     * <p>
+     * Revealing a question that is already closed just broadcasts again: harmless, and it helps a host whose first
+     * reveal's broadcast got lost.
+     *
+     * @throws SessionStateException no question is running (lobby, ended, or the live state was lost)
+     */
+    public void reveal(UUID sessionId, UUID hostId) {
+        AnswerRevealed revealed = inTransaction(() -> {
+            Session session = lockedSessionHostedBy(sessionId, hostId);
+            LiveState live = liveState.find(sessionId)
+                    .filter(state -> state.currentQuestionIndex().isPresent())
+                    .orElseThrow(() -> new SessionStateException("No question is running."));
+            int index = live.currentQuestionIndex().orElseThrow();
+            if (live.questionOpen()) {
+                liveState.closeQuestion(sessionId);
+            }
+            return AnswerRevealed.of(sessionId, index, session.questions().get(index));
+        });
+        broadcaster.answerRevealed(revealed);
+    }
+
+    /** LOBBY or IN_PROGRESS → ENDED. SessionEnded goes to the outbox with the status change. */
     public void end(UUID sessionId, UUID hostId) {
         inTransaction(() -> {
             Session ended = lockedSessionHostedBy(sessionId, hostId).end();
             sessions.updateStatus(ended);
+            outbox.sessionEnded(new SessionEnded(UUID.randomUUID(), sessionId, liveState.serverTime().toEpochMilli(),
+                    SessionEnded.SCHEMA_VERSION));
             liveState.end(sessionId);
             return ended;
         });

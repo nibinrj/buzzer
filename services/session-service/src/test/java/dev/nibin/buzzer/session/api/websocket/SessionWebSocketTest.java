@@ -4,8 +4,11 @@ import com.github.tomakehurst.wiremock.WireMockServer;
 import dev.nibin.buzzer.session.ApiIntegrationTest;
 import dev.nibin.buzzer.session.TestTokens;
 import dev.nibin.buzzer.session.application.JoinSession;
+import dev.nibin.buzzer.session.domain.Answer;
+import dev.nibin.buzzer.session.domain.AnswerRepository;
 import dev.nibin.buzzer.session.domain.LiveState;
 import dev.nibin.buzzer.session.domain.LiveStateRepository;
+import dev.nibin.buzzer.session.domain.PlayerRepository;
 import dev.nibin.buzzer.session.domain.RoomCode;
 import dev.nibin.buzzer.session.domain.Session;
 import dev.nibin.buzzer.session.domain.SessionQuestion;
@@ -48,14 +51,15 @@ import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Real STOMP clients over a real WebSocket against the running app (random port), with real signed tokens.
- * Covers the batch's promise (the host advances, two players receive the question, without its answer) and every
- * refusal of the two interceptors.
+ * Covers the game (the host advances, players receive each question without its answer, answer and get acked,
+ * the host reveals) and every refusal of the two interceptors.
  */
 @ApiIntegrationTest
 class SessionWebSocketTest {
 
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Duration WAIT = Duration.ofSeconds(5);
+    private static final String ACKS = "/user/queue/answer-ack";
 
     @LocalServerPort
     private int port;
@@ -74,6 +78,12 @@ class SessionWebSocketTest {
 
     @Autowired
     private SimpUserRegistry userRegistry;
+
+    @Autowired
+    private AnswerRepository answers;
+
+    @Autowired
+    private PlayerRepository players;
 
     private final WebSocketStompClient stompClient = stompClient();
     private final List<StompSession> connections = new ArrayList<>();
@@ -130,7 +140,7 @@ class SessionWebSocketTest {
         BlockingQueue<Map<String, Object>> hostErrors = subscribe(hostConnection, "/user/queue/errors");
         BlockingQueue<Map<String, Object>> adaQuestions = subscribe(connect(guestToken(ada)), questionTopic());
         awaitSubscribers(questionTopic(), 1);
-        awaitErrorQueueOf(host);
+        awaitUserQueue(host, "/user/queue/errors", 1);
 
         hostConnection.send(command("start"), "");
         assertThat(next(adaQuestions)).containsEntry("index", 0);
@@ -161,7 +171,96 @@ class SessionWebSocketTest {
         assertThat(sessions.findById(session.id()).orElseThrow().status()).isEqualTo(Session.Status.ENDED);
     }
 
+    // --- answers and reveal (batch 4.3) ---
+
+    @Test
+    void anAnswerIsAckedOnlyOnTheConnectionThatSentItAndRecorded() throws Exception {
+        StompSession adaPhone = connect(guestToken(ada));
+        StompSession adaLaptop = connect(guestToken(ada));
+        BlockingQueue<Map<String, Object>> phoneAcks = subscribe(adaPhone, ACKS);
+        BlockingQueue<Map<String, Object>> laptopAcks = subscribe(adaLaptop, ACKS);
+        startAndAwaitFirstQuestion(adaPhone);
+        awaitUserQueue(ada, ACKS, 2);
+
+        adaPhone.send(command("answer"), answer(0, 0)); // Paris: correct
+
+        assertThat(next(phoneAcks)).containsEntry("accepted", true).containsEntry("seq", 1)
+                .containsEntry("reason", null).containsEntry("questionId", questionId(0).toString());
+        assertThat(laptopAcks.poll(300, TimeUnit.MILLISECONDS)).isNull();
+        Answer recorded = answers.find(session.id(), questionId(0), playerIdOf(ada)).orElseThrow();
+        assertThat(recorded.correct()).isTrue();
+        assertThat(recorded.correctRank()).isEqualTo(1);
+        assertThat(recorded.seq()).isEqualTo(1);
+    }
+
+    @Test
+    void aSecondAnswerIsADuplicateAndTheNextPlayerIsSecondInLine() throws Exception {
+        StompSession adaConnection = connect(guestToken(ada));
+        StompSession bobConnection = connect(guestToken(bob));
+        BlockingQueue<Map<String, Object>> adaAcks = subscribe(adaConnection, ACKS);
+        BlockingQueue<Map<String, Object>> bobAcks = subscribe(bobConnection, ACKS);
+        startAndAwaitFirstQuestion(adaConnection);
+        awaitUserQueue(ada, ACKS, 1);
+        awaitUserQueue(bob, ACKS, 1);
+
+        adaConnection.send(command("answer"), answer(0, 1));
+        assertThat(next(adaAcks)).containsEntry("accepted", true).containsEntry("seq", 1);
+        bobConnection.send(command("answer"), answer(0, 0));
+        assertThat(next(bobAcks)).containsEntry("accepted", true).containsEntry("seq", 2);
+        adaConnection.send(command("answer"), answer(0, 0));
+
+        assertThat(next(adaAcks)).containsEntry("accepted", false).containsEntry("reason", "DUPLICATE")
+                .containsEntry("seq", 1);
+        assertThat(answers.find(session.id(), questionId(0), playerIdOf(ada)).orElseThrow().optionIndex())
+                .isEqualTo(1); // the first answer stands
+    }
+
+    @Test
+    void revealTellsEveryoneTheCorrectOptionAndClosesTheQuestion() throws Exception {
+        StompSession hostConnection = connect(TestTokens.host(host));
+        StompSession adaConnection = connect(guestToken(ada));
+        BlockingQueue<Map<String, Object>> adaReveals = subscribe(adaConnection, revealTopic());
+        BlockingQueue<Map<String, Object>> adaAcks = subscribe(adaConnection, ACKS);
+        BlockingQueue<Map<String, Object>> adaQuestions = subscribe(adaConnection, questionTopic());
+        awaitSubscribers(revealTopic(), 1);
+        awaitSubscribers(questionTopic(), 1);
+        awaitUserQueue(ada, ACKS, 1);
+        hostConnection.send(command("start"), "");
+        next(adaQuestions);
+
+        hostConnection.send(command("reveal"), "");
+
+        assertThat(next(adaReveals)).containsEntry("index", 0).containsEntry("correctOption", 0)
+                .containsEntry("questionId", questionId(0).toString());
+        adaConnection.send(command("answer"), answer(0, 0));
+        assertThat(next(adaAcks)).containsEntry("accepted", false).containsEntry("reason", "CLOSED")
+                .containsEntry("seq", null);
+        assertThat(liveState.find(session.id()).orElseThrow().questionOpen()).isFalse();
+    }
+
+    @Test
+    void anUnreadableAnswerIsReportedOnTheErrorQueue() throws Exception {
+        StompSession adaConnection = connect(guestToken(ada));
+        BlockingQueue<Map<String, Object>> adaErrors = subscribe(adaConnection, "/user/queue/errors");
+        awaitUserQueue(ada, "/user/queue/errors", 1);
+
+        adaConnection.send(command("answer"), Map.of("questionId", "not-a-uuid", "optionId", 0));
+
+        assertThat(next(adaErrors)).containsEntry("title", "Unreadable answer");
+    }
+
     // --- refusals ---
+
+    @Test
+    void theHostCannotAnswer() throws Exception {
+        ErrorCatcher errors = new ErrorCatcher();
+        StompSession hostConnection = connect(TestTokens.host(host), errors);
+
+        hostConnection.send(command("answer"), answer(0, 0));
+
+        assertThat(errors.next()).isNotNull();
+        awaitClosed(hostConnection);
+    }
 
     @Test
     void connectWithoutATokenIsRefused() throws Exception {
@@ -291,16 +390,39 @@ class SessionWebSocketTest {
         }
     }
 
-    /** The host's own error queue. Filtered by user: disconnects of earlier tests' hosts are asynchronous. */
-    private void awaitErrorQueueOf(UUID user) throws InterruptedException {
+    /**
+     * {@code count} subscriptions of this user to one of their queues (one per connection). Filtered by user:
+     * disconnects of earlier tests' users are asynchronous.
+     */
+    private void awaitUserQueue(UUID user, String queue, int count) throws InterruptedException {
         long deadline = System.nanoTime() + WAIT.toNanos();
-        while (userRegistry.findSubscriptions(s -> s.getDestination().equals("/user/queue/errors")
-                && s.getSession().getUser().getName().equals(user.toString())).isEmpty()) {
+        while (userRegistry.findSubscriptions(s -> s.getDestination().equals(queue)
+                && s.getSession().getUser().getName().equals(user.toString())).size() < count) {
             if (System.nanoTime() > deadline) {
-                fail("Expected " + user + " to subscribe to /user/queue/errors");
+                fail("Expected " + user + " to subscribe to " + queue + " " + count + " time(s)");
             }
             Thread.sleep(20);
         }
+    }
+
+    /** The host starts the game; returns once this player connection has received question 0. */
+    private void startAndAwaitFirstQuestion(StompSession player) throws Exception {
+        BlockingQueue<Map<String, Object>> questions = subscribe(player, questionTopic());
+        awaitSubscribers(questionTopic(), 1);
+        connect(TestTokens.host(host)).send(command("start"), "");
+        assertThat(next(questions)).containsEntry("index", 0);
+    }
+
+    private Map<String, Object> answer(int questionIndex, int option) {
+        return Map.of("questionId", questionId(questionIndex).toString(), "optionId", option);
+    }
+
+    private UUID questionId(int index) {
+        return session.questions().get(index).questionId();
+    }
+
+    private UUID playerIdOf(UUID user) {
+        return players.find(session.id(), user).orElseThrow().playerId();
     }
 
     private static Map<String, Object> next(BlockingQueue<Map<String, Object>> queue) throws InterruptedException {
@@ -319,6 +441,10 @@ class SessionWebSocketTest {
 
     private String statusTopic() {
         return "/topic/sessions/" + session.id() + "/status";
+    }
+
+    private String revealTopic() {
+        return "/topic/sessions/" + session.id() + "/reveal";
     }
 
     private String command(String name) {

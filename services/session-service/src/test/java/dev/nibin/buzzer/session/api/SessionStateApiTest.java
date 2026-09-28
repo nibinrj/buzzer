@@ -88,9 +88,8 @@ class SessionStateApiTest {
     void theCurrentQuestionIsShownWithoutItsAnswer() throws Exception {
         Session session = newSession();
         Instant deadline = Instant.parse("2026-09-28T10:00:15Z");
-        // What batch 3.4's "next" will write: question 2 of 2 is running.
-        redis.opsForHash().putAll("session:" + session.id() + ":state", Map.of("status", "IN_PROGRESS",
-                "questionIndex", "1", "questionDeadline", String.valueOf(deadline.toEpochMilli())));
+        // Question 2 of 2 is running and open.
+        liveState.showQuestion(session.id(), 1, deadline);
 
         String body = state(session.id(), host(session.hostId()))
                 .andExpect(status().isOk())
@@ -98,10 +97,26 @@ class SessionStateApiTest {
                 .andExpect(jsonPath("$.currentQuestion.index").value(1))
                 .andExpect(jsonPath("$.currentQuestion.text").value("Capital of Italy?"))
                 .andExpect(jsonPath("$.currentQuestion.options", contains("Milan", "Rome", "Turin")))
+                .andExpect(jsonPath("$.currentQuestion.revealed").value(false))
+                .andExpect(jsonPath("$.currentQuestion.revealedOption").value(nullValue()))
                 .andExpect(jsonPath("$.questionDeadline").value("2026-09-28T10:00:15Z"))
                 .andReturn().getResponse().getContentAsString();
 
         assertThat(body).doesNotContainIgnoringCase("correct");
+    }
+
+    @Test
+    void onceRevealedAReconnectingPlayerSeesTheCorrectOption() throws Exception {
+        Session session = newSession();
+        UUID ada = UUID.randomUUID();
+        joinAs(session, ada, "Ada");
+        liveState.showQuestion(session.id(), 1, Instant.parse("2026-09-28T10:00:15Z"));
+        liveState.closeQuestion(session.id());
+
+        state(session.id(), guest(ada, "Ada"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.currentQuestion.revealed").value(true))
+                .andExpect(jsonPath("$.currentQuestion.revealedOption").value(1)); // Rome
     }
 
     @Test
@@ -110,7 +125,7 @@ class SessionStateApiTest {
         UUID ada = UUID.randomUUID();
         joinAs(session, ada, "Ada");
         // Redis restarted empty, or the keys expired.
-        redis.delete(List.of("session:" + session.id() + ":state", "session:" + session.id() + ":players"));
+        redis.delete(List.of("session:{" + session.id() + "}:state", "session:{" + session.id() + "}:players"));
 
         state(session.id(), guest(ada, "Ada"))
                 .andExpect(status().isOk())

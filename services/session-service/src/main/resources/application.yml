@@ -16,6 +16,19 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD}
+  kafka:
+    # Local default: docker-compose's Redpanda (its external listener). In AWS, MSK's bootstrap brokers.
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      # Keys and values are Strings (Boot's default serializers): the outbox already holds the JSON.
+      # acks=all: acknowledged only once every in-sync replica has the record. Only then is a row marked sent.
+      acks: all
+      properties:
+        # Fail a send within seconds, not the client defaults (up to 60 s blocked, 120 s delivery), so a run of
+        # OutboxPublisher gives up quickly while Kafka is down and holds its row locks only briefly.
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
   cloud:
     circuitbreaker:
       resilience4j:
@@ -45,6 +58,16 @@ session:
     base-url: ${QUIZ_SERVICE_URI:http://localhost:8082}
     connect-timeout: 1s
     read-timeout: 2s
+  outbox:
+    # OutboxPublisher: every 300 ms (after the previous run ends), up to 100 of the oldest unsent events.
+    poll-interval-ms: 300
+    batch-size: 100
+    # Total wait for acknowledgements in one run, so also how long a run holds its row locks at most. Longer than
+    # spring.kafka.producer.properties.delivery.timeout.ms, so a send fails before we stop waiting.
+    send-timeout: 15s
+    # Used only when this service creates a topic that doesn't exist yet. 3 on a real multi-broker cluster.
+    topic-partitions: 3
+    topic-replicas: ${KAFKA_TOPIC_REPLICAS:1}
 
 server:
   port: 8083

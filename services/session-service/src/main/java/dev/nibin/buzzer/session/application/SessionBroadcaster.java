@@ -18,6 +18,8 @@ public interface SessionBroadcaster {
 
     void statusChanged(StatusChanged change);
 
+    void answerRevealed(AnswerRevealed revealed);
+
     /**
      * Goes to every player: built field by field from the question, and correctOption is not one of the fields.
      * Options are addressed by index.
@@ -32,5 +34,13 @@ public interface SessionBroadcaster {
     }
 
     record StatusChanged(UUID sessionId, Session.Status status) {
+    }
+
+    /** The host revealed question {@code index}: it takes no more answers, and this is its correct option. */
+    record AnswerRevealed(UUID sessionId, int index, UUID questionId, int correctOption) {
+
+        public static AnswerRevealed of(UUID sessionId, int index, SessionQuestion question) {
+            return new AnswerRevealed(sessionId, index, question.questionId(), question.correctOption());
+        }
     }
 }

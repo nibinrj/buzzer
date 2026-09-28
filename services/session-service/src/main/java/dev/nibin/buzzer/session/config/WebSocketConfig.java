@@ -17,9 +17,9 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
  * STOMP over WebSocket.
  * <pre>
  * endpoint   /ws                   plain WebSocket (no SockJS); authentication happens on CONNECT, not here
- * /app/...   → @MessageMapping     commands, handled by SessionCommandController
- * /topic/... → simple broker       one-to-many (a session's question, status)
- * /queue/... → simple broker       one-to-one, addressed as /user/queue/... (errors to the sender)
+ * /app/...   → @MessageMapping     commands: SessionCommandController (host), AnswerController (players)
+ * /topic/... → simple broker       one-to-many (a session's question, status, reveal)
+ * /queue/... → simple broker       one-to-one, addressed as /user/queue/... (errors, answer acks: to the sender)
  * </pre>
  * Heartbeats every 10 s both ways: an idle connection still carries a byte well inside the AWS ALB's idle
  * timeout, and a dead client is noticed within about 20 s.

@@ -34,6 +34,7 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.redpanda.RedpandaContainer;
 
 import java.lang.reflect.Type;
 import java.security.SecureRandom;
@@ -83,6 +84,9 @@ class MultiInstanceBroadcastTest {
     private GenericContainer<?> redis;
 
     @Autowired
+    private RedpandaContainer redpanda;
+
+    @Autowired
     private SessionRepository sessions;
 
     @Autowired
@@ -115,6 +119,7 @@ class MultiInstanceBroadcastTest {
                 "--spring.data.redis.host=" + redis.getHost(),
                 "--spring.data.redis.port=" + redis.getMappedPort(6379),
                 "--spring.data.redis.password=",
+                "--spring.kafka.bootstrap-servers=" + redpanda.getBootstrapServers(),
                 "--session.quiz-client.base-url=" + quizServiceStub.baseUrl(),
                 "--session.security.jwt.jwk-set-uri=" + quizServiceStub.baseUrl() + TestTokens.JWKS_PATH);
     }

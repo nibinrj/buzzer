@@ -1,5 +1,8 @@
 package dev.nibin.buzzer.session.application;
 
+import dev.nibin.buzzer.events.SessionEnded;
+import dev.nibin.buzzer.events.SessionStarted;
+import dev.nibin.buzzer.session.application.SessionBroadcaster.AnswerRevealed;
 import dev.nibin.buzzer.session.application.SessionBroadcaster.QuestionShown;
 import dev.nibin.buzzer.session.application.SessionBroadcaster.StatusChanged;
 import dev.nibin.buzzer.session.domain.LiveState;
@@ -31,7 +34,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-/** Start/next/end rules and ordering, with repositories and broadcaster mocked. */
+/** Start/next/reveal/end rules and ordering, with repositories and broadcaster mocked. */
 class RunSessionTest {
 
     private static final Instant REDIS_NOW = Instant.parse("2026-09-28T10:00:00Z");
@@ -44,8 +47,9 @@ class RunSessionTest {
     private final SessionRepository sessions = mock(SessionRepository.class);
     private final LiveStateRepository liveState = mock(LiveStateRepository.class);
     private final SessionBroadcaster broadcaster = mock(SessionBroadcaster.class);
+    private final EventOutbox outbox = mock(EventOutbox.class);
     private final RunSession runSession =
-            new RunSession(sessions, liveState, broadcaster, TransactionOperations.withoutTransaction());
+            new RunSession(sessions, liveState, broadcaster, TransactionOperations.withoutTransaction(), outbox);
 
     RunSessionTest() {
         when(liveState.serverTime()).thenReturn(REDIS_NOW);
@@ -68,6 +72,34 @@ class RunSessionTest {
     }
 
     @Test
+    void startRecordsSessionStartedInTheOutboxBeforeAnythingIsBroadcast() {
+        Session lobby = session(Session.Status.LOBBY);
+
+        runSession.start(lobby.id(), HOST);
+
+        ArgumentCaptor<SessionStarted> event = ArgumentCaptor.forClass(SessionStarted.class);
+        InOrder order = inOrder(sessions, outbox, broadcaster);
+        order.verify(sessions).updateStatus(any());
+        order.verify(outbox).sessionStarted(event.capture());
+        order.verify(broadcaster).statusChanged(any());
+        assertThat(event.getValue()).usingRecursiveComparison().ignoringFields("eventId").isEqualTo(
+                new SessionStarted(null, lobby.id(), lobby.quizId(), HOST, 2, REDIS_NOW.toEpochMilli(), 1));
+    }
+
+    @Test
+    void endRecordsSessionEndedInTheOutbox() {
+        Session running = session(Session.Status.IN_PROGRESS);
+
+        runSession.end(running.id(), HOST);
+
+        ArgumentCaptor<SessionEnded> event = ArgumentCaptor.forClass(SessionEnded.class);
+        verify(outbox).sessionEnded(event.capture());
+        assertThat(event.getValue().sessionId()).isEqualTo(running.id());
+        assertThat(event.getValue().endedAtMs()).isEqualTo(REDIS_NOW.toEpochMilli());
+        assertThat(event.getValue().eventId()).isNotNull();
+    }
+
+    @Test
     void theDeadlineComesFromRedisTimeNotThisServersClock() {
         Session lobby = session(Session.Status.LOBBY);
 
@@ -79,8 +111,7 @@ class RunSessionTest {
     @Test
     void nextShowsTheQuestionAfterTheCurrentOne() {
         Session running = session(Session.Status.IN_PROGRESS);
-        when(liveState.find(running.id())).thenReturn(Optional.of(new LiveState(running.id(),
-                Session.Status.IN_PROGRESS, Optional.of(0), Optional.of(REDIS_NOW), List.of())));
+        runningQuestion(running, 0, true);
 
         runSession.next(running.id(), HOST);
 
@@ -126,6 +157,7 @@ class RunSessionTest {
 
         assertThatThrownBy(() -> runSession.start(running.id(), HOST)).isInstanceOf(SessionStateException.class);
         verify(sessions, never()).updateStatus(any());
+        verifyNoInteractions(outbox);
         verify(liveState, never()).showQuestion(any(), anyInt(), any());
         verifyNoInteractions(broadcaster);
     }
@@ -139,6 +171,59 @@ class RunSessionTest {
         assertThatThrownBy(() -> runSession.start(lobby.id(), HOST))
                 .isInstanceOf(LiveStateUnavailableException.class);
         verifyNoInteractions(broadcaster);
+    }
+
+    // --- reveal ---
+
+    @Test
+    void revealClosesTheQuestionThenBroadcastsItsCorrectOption() {
+        Session running = session(Session.Status.IN_PROGRESS);
+        runningQuestion(running, 1, true);
+
+        runSession.reveal(running.id(), HOST);
+
+        InOrder order = inOrder(liveState, broadcaster);
+        order.verify(liveState).closeQuestion(running.id());
+        order.verify(broadcaster).answerRevealed(new AnswerRevealed(running.id(), 1, Q2.questionId(), 1));
+        verify(sessions, never()).updateStatus(any());
+    }
+
+    @Test
+    void revealingAClosedQuestionAgainOnlyBroadcastsAgain() {
+        Session running = session(Session.Status.IN_PROGRESS);
+        runningQuestion(running, 0, false);
+
+        runSession.reveal(running.id(), HOST);
+
+        verify(liveState, never()).closeQuestion(any());
+        verify(broadcaster).answerRevealed(new AnswerRevealed(running.id(), 0, Q1.questionId(), 0));
+    }
+
+    @Test
+    void revealWithoutARunningQuestionIsRefused() {
+        Session lobby = session(Session.Status.LOBBY);
+        when(liveState.find(lobby.id())).thenReturn(Optional.of(LiveState.of(lobby.id(), Session.Status.LOBBY,
+                List.of())));
+
+        assertThatThrownBy(() -> runSession.reveal(lobby.id(), HOST)).isInstanceOf(SessionStateException.class);
+        verify(liveState, never()).closeQuestion(any());
+        verifyNoInteractions(broadcaster);
+    }
+
+    @Test
+    void anotherHostCannotReveal() {
+        Session running = session(Session.Status.IN_PROGRESS);
+        runningQuestion(running, 0, true);
+
+        assertThatThrownBy(() -> runSession.reveal(running.id(), UUID.randomUUID()))
+                .isInstanceOf(SessionNotFoundException.class);
+        verify(liveState, never()).closeQuestion(any());
+        verifyNoInteractions(broadcaster);
+    }
+
+    private void runningQuestion(Session session, int index, boolean open) {
+        when(liveState.find(session.id())).thenReturn(Optional.of(new LiveState(session.id(),
+                Session.Status.IN_PROGRESS, Optional.of(index), Optional.of(REDIS_NOW), open, List.of())));
     }
 
     private Session session(Session.Status status) {

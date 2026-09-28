@@ -32,8 +32,15 @@ public interface LiveStateRepository {
      */
     Instant serverTime();
 
-    /** Status IN_PROGRESS, question {@code index} running until {@code deadline}. */
+    /** Status IN_PROGRESS, question {@code index} running until {@code deadline}, open for answers. */
     void showQuestion(UUID sessionId, int index, Instant deadline);
+
+    /**
+     * The current question takes no more answers (reveal). The pointer and deadline stay: the question is still the
+     * current one, only closed. An answer racing this is decided by Redis's order: before it counts, after it is
+     * CLOSED.
+     */
+    void closeQuestion(UUID sessionId);
 
     /** Status ENDED; no question runs any more. */
     void end(UUID sessionId);

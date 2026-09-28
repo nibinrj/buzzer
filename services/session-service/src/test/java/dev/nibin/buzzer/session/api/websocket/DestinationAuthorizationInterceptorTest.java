@@ -33,6 +33,7 @@ class DestinationAuthorizationInterceptorTest {
         when(access.isHost(SESSION, HOST)).thenReturn(true);
         when(access.isHostOrPlayer(SESSION, HOST)).thenReturn(true);
         when(access.isHostOrPlayer(SESSION, PLAYER)).thenReturn(true);
+        when(access.isPlayer(SESSION, PLAYER)).thenReturn(true);
     }
 
     @Test
@@ -63,9 +64,18 @@ class DestinationAuthorizationInterceptorTest {
         assertThat(interceptor.maySend(destination, user(PLAYER))).isFalse();
     }
 
+    @Test
+    void answersAreForThePlayersOnlyNotTheHost() {
+        String destination = "/app/sessions/" + SESSION + "/answer";
+        assertThat(interceptor.maySend(destination, user(PLAYER))).isTrue();
+        assertThat(interceptor.maySend(destination, user(HOST))).isFalse();
+        assertThat(interceptor.maySend(destination, user(STRANGER))).isFalse();
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"/topic/sessions/%s/question", "/queue/errors", "/app/sessions/%s/pause",
-            "/app/sessions/%s/start/extra", "/user/queue/errors"})
+            "/app/sessions/%s/start/extra", "/app/sessions/%s/answer/extra", "/app/sessions/not-a-uuid/answer",
+            "/user/queue/errors"})
     void everyOtherSendIsRefusedEvenForTheHost(String destination) {
         assertThat(interceptor.maySend(destination.formatted(SESSION), user(HOST))).isFalse();
     }

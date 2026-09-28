@@ -93,7 +93,7 @@ class GetSessionStateTest {
     @Test
     void theCurrentQuestionComesFromTheIndexInTheLiveState() {
         when(liveState.find(SESSION.id())).thenReturn(Optional.of(new LiveState(SESSION.id(),
-                Session.Status.IN_PROGRESS, Optional.of(1), Optional.of(NOW.plusSeconds(15)), List.of())));
+                Session.Status.IN_PROGRESS, Optional.of(1), Optional.of(NOW.plusSeconds(15)), true, List.of())));
 
         assertThat(getSessionState.get(SESSION.id(), HOST).currentQuestion()).contains(Q2);
     }

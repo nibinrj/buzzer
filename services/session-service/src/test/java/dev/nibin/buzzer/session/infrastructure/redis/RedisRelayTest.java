@@ -1,5 +1,6 @@
 package dev.nibin.buzzer.session.infrastructure.redis;
 
+import dev.nibin.buzzer.session.application.SessionBroadcaster.AnswerRevealed;
 import dev.nibin.buzzer.session.application.SessionBroadcaster.QuestionShown;
 import dev.nibin.buzzer.session.application.SessionBroadcaster.StatusChanged;
 import dev.nibin.buzzer.session.domain.Session;
@@ -47,9 +48,22 @@ class RedisRelayTest {
                 20, List.of("Paris", "Lyon"), Instant.parse("2026-09-28T10:15:30.123Z"));
 
         broadcaster.questionShown(question);
-        listener.onMessage(message(published()), null);
+        String published = published();
+        listener.onMessage(message(published), null);
 
         verify(delivery).questionShown(question);
+        verifyNoMoreInteractions(delivery);
+        assertThat(published).doesNotContainIgnoringCase("correct"); // a shown question never carries its answer
+    }
+
+    @Test
+    void aRevealComesOutOfTheChannelExactlyAsItWentIn() {
+        AnswerRevealed revealed = new AnswerRevealed(UUID.randomUUID(), 2, UUID.randomUUID(), 1);
+
+        broadcaster.answerRevealed(revealed);
+        listener.onMessage(message(published()), null);
+
+        verify(delivery).answerRevealed(revealed);
         verifyNoMoreInteractions(delivery);
     }
 
@@ -84,7 +98,6 @@ class RedisRelayTest {
     private String published() {
         ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
         verify(redis).convertAndSend(eq(RedisRelayListener.CHANNEL), body.capture());
-        assertThat(body.getValue()).doesNotContainIgnoringCase("correct");
         return body.getValue();
     }
 

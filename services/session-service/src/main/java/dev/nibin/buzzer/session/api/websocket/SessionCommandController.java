@@ -14,12 +14,11 @@ import java.security.Principal;
 import java.util.UUID;
 
 /**
- * The host's commands over STOMP: SEND to /app/sessions/{id}/start|next|end (the /app prefix is stripped before
- * matching). Nothing is returned on success: the result reaches everyone, host included, on the session's topics.
- * A failure goes back to the sender only, on /user/queue/errors.
+ * The host's commands over STOMP: SEND to /app/sessions/{id}/start|next|reveal|end (the /app prefix is stripped
+ * before matching). Nothing is returned on success: the result reaches everyone, host included, on the session's
+ * topics. A failure goes back to the sender only, on /user/queue/errors.
  * <p>
  * DestinationAuthorizationInterceptor already let only the host through; RunSession checks again.
- * reveal is authorized but has no handler yet (batch 4.3): Spring drops a SEND nobody handles.
  */
 @Controller
 public class SessionCommandController {
@@ -38,6 +37,11 @@ public class SessionCommandController {
     @MessageMapping("/sessions/{sessionId}/next")
     public void next(@DestinationVariable UUID sessionId, Principal host) {
         runSession.next(sessionId, userId(host));
+    }
+
+    @MessageMapping("/sessions/{sessionId}/reveal")
+    public void reveal(@DestinationVariable UUID sessionId, Principal host) {
+        runSession.reveal(sessionId, userId(host));
     }
 
     @MessageMapping("/sessions/{sessionId}/end")
