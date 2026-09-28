@@ -1,6 +1,50 @@
 spring:
   application:
     name: session-service
+  datasource:
+    # Non-secret local defaults; the password has no default and must come from the environment.
+    url: ${SESSION_DB_URL:jdbc:postgresql://localhost:5432/session_db}
+    username: ${SESSION_DB_USERNAME:session_app}
+    password: ${SESSION_DB_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  data:
+    redis:
+      # Non-secret local defaults; the password has no default and must come from the environment.
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD}
+  cloud:
+    circuitbreaker:
+      resilience4j:
+        # Run the quiz-service call on the request thread. By default Spring Cloud runs it on a thread pool
+        # under a TimeLimiter (1 s); we bound it with the HTTP client's own timeouts instead (QuizClientProperties).
+        disable-time-limiter: true
+        disable-thread-pool: true
+
+session:
+  security:
+    jwt:
+      # identity-service's public keys. Fetched on the first request, so session-service starts even
+      # while identity is down. In AWS this comes from the environment (the service's internal address).
+      jwk-set-uri: ${IDENTITY_JWKS_URI:http://localhost:8081/.well-known/jwks.json}
+      issuer: buzzer-identity
+  websocket:
+    # Browser origins allowed to open /ws (checked on the handshake's Origin header). [*] = any port.
+    # Comma-separated in the environment: SESSION_WEBSOCKET_ALLOWED_ORIGIN_PATTERNS=https://buzzer.example.com
+    allowed-origin-patterns:
+      - "http://localhost:[*]"
+  live-state:
+    # Redis keys of a session expire this long after their last write. Longer than any game night; Postgres
+    # keeps the record, so an expired session can still be rebuilt.
+    ttl: 6h
+  quiz-client:
+    # Direct service-to-service call, never through the gateway (the gateway refuses /internal/**).
+    base-url: ${QUIZ_SERVICE_URI:http://localhost:8082}
+    connect-timeout: 1s
+    read-timeout: 2s
 
 server:
   port: 8083
