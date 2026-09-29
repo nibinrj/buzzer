@@ -1,12 +1,37 @@
 spring:
   application:
     name: scoring-service
-
-server:
-  port: 8084
+  datasource:
+    # Non-secret local defaults; the password has no default and must come from the environment.
+    url: ${SCORING_DB_URL:jdbc:postgresql://localhost:5432/scoring_db}
+    username: ${SCORING_DB_USERNAME:scoring_app}
+    password: ${SCORING_DB_PASSWORD}
+  kafka:
+    # Local default: docker-compose's Redpanda (its external listener). In AWS, MSK's bootstrap brokers.
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      # One group for all scoring-service tasks: together they read each record once.
+      group-id: scoring-service
+      # A group with no committed offset yet (first deploy) starts at the oldest record, not the newest,
+      # so answers published before scoring-service ever ran are still scored.
+      auto-offset-reset: earliest
+      # Spring Kafka already turns the client's timer-based auto-commit off; said here so nobody turns it on.
+      # Offsets are committed by the listener's ack, after the score's transaction committed.
+      enable-auto-commit: false
+      # Keys and values are Strings (Boot's default deserializers): EventReader parses the JSON itself.
+    listener:
+      # ack.acknowledge() commits the offset right away, on the consumer thread.
+      ack-mode: manual_immediate
+    producer:
+      # Only used to forward failed records to the retry topics and the DLT.
+      # acks=all: a forwarded record is safe on every in-sync replica before the original's offset moves on.
+      acks: all
 
 management:
   endpoints:
     web:
       exposure:
         include: health,info
+
+server:
+  port: 8084
