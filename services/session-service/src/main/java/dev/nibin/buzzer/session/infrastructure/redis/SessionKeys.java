@@ -13,6 +13,7 @@ import java.util.UUID;
  * buzz:{S}:Q                 sorted set, see submit_answer.lua   (Q = question id, no braces)
  * buzz:{S}:Q:seq             counter
  * buzz:{S}:Q:correct         counter
+ * session:{S}:leaderboard-version   string, see accept_leaderboard_version.lua
  * </pre>
  */
 final class SessionKeys {
@@ -38,6 +39,10 @@ final class SessionKeys {
 
     static String correctCount(UUID sessionId, UUID questionId) {
         return answered(sessionId, questionId) + ":correct";
+    }
+
+    static String leaderboardVersion(UUID sessionId) {
+        return "session:" + tag(sessionId) + ":leaderboard-version";
     }
 
     private static String tag(UUID sessionId) {

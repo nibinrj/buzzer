@@ -1,6 +1,7 @@
 package dev.nibin.buzzer.session.infrastructure.websocket;
 
 import dev.nibin.buzzer.session.application.SessionBroadcaster.AnswerRevealed;
+import dev.nibin.buzzer.session.application.SessionBroadcaster.LeaderboardChanged;
 import dev.nibin.buzzer.session.application.SessionBroadcaster.QuestionShown;
 import dev.nibin.buzzer.session.application.SessionBroadcaster.StatusChanged;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Component;
  * /topic/sessions/{id}/question  QuestionShown
  * /topic/sessions/{id}/status    StatusChanged
  * /topic/sessions/{id}/reveal    AnswerRevealed
+ * /topic/sessions/{id}/leaderboard  LeaderboardChanged
  * </pre>
  */
 @Component
@@ -34,6 +36,10 @@ public class LocalStompDelivery {
 
     public void answerRevealed(AnswerRevealed revealed) {
         messaging.convertAndSend(topic(revealed.sessionId().toString(), "reveal"), revealed);
+    }
+
+    public void leaderboardChanged(LeaderboardChanged leaderboard) {
+        messaging.convertAndSend(topic(leaderboard.sessionId().toString(), "leaderboard"), leaderboard);
     }
 
     private static String topic(String sessionId, String name) {

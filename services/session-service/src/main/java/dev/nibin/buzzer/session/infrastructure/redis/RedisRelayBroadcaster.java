@@ -50,6 +50,11 @@ class RedisRelayBroadcaster implements SessionBroadcaster {
         publish(RelayMessage.of(revealed), revealed.sessionId());
     }
 
+    @Override
+    public void leaderboardChanged(LeaderboardChanged leaderboard) {
+        publish(RelayMessage.of(leaderboard), leaderboard.sessionId());
+    }
+
     private void publish(RelayMessage message, UUID sessionId) {
         try {
             redis.convertAndSend(RedisRelayListener.CHANNEL, json.writeValueAsString(message));

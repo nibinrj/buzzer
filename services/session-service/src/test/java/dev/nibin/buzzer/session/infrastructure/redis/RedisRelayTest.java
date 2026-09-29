@@ -1,6 +1,7 @@
 package dev.nibin.buzzer.session.infrastructure.redis;
 
 import dev.nibin.buzzer.session.application.SessionBroadcaster.AnswerRevealed;
+import dev.nibin.buzzer.session.application.SessionBroadcaster.LeaderboardChanged;
 import dev.nibin.buzzer.session.application.SessionBroadcaster.QuestionShown;
 import dev.nibin.buzzer.session.application.SessionBroadcaster.StatusChanged;
 import dev.nibin.buzzer.session.domain.Session;
@@ -75,6 +76,19 @@ class RedisRelayTest {
         listener.onMessage(message(published()), null);
 
         verify(delivery).statusChanged(change);
+        verifyNoMoreInteractions(delivery);
+    }
+
+    @Test
+    void aLeaderboardComesOutOfTheChannelExactlyAsItWentIn() {
+        LeaderboardChanged leaderboard = new LeaderboardChanged(UUID.randomUUID(), 12, List.of(
+                new LeaderboardChanged.Line(1, UUID.randomUUID(), 1000),
+                new LeaderboardChanged.Line(2, UUID.randomUUID(), 900)));
+
+        broadcaster.leaderboardChanged(leaderboard);
+        listener.onMessage(message(published()), null);
+
+        verify(delivery).leaderboardChanged(leaderboard);
         verifyNoMoreInteractions(delivery);
     }
 

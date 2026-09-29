@@ -19,6 +19,14 @@ spring:
   kafka:
     # Local default: docker-compose's Redpanda (its external listener). In AWS, MSK's bootstrap brokers.
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      # ScoreUpdatedListener: one group for all session-service tasks, so each leaderboard is read once and
+      # then fanned out through the Redis relay.
+      group-id: session-service
+      # A brand-new group (first deploy) starts at the newest record: old leaderboards are worth nothing as pushes.
+      # An existing group continues from its committed offset either way.
+      auto-offset-reset: latest
+      # Keys and values are Strings (Boot's default deserializers): ScoreUpdatedListener parses the JSON itself.
     producer:
       # Keys and values are Strings (Boot's default serializers): the outbox already holds the JSON.
       # acks=all: acknowledged only once every in-sync replica has the record. Only then is a row marked sent.

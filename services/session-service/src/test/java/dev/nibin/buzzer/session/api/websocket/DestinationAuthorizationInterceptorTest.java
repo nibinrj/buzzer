@@ -45,6 +45,13 @@ class DestinationAuthorizationInterceptorTest {
     }
 
     @Test
+    void theLeaderboardIsForTheSessionsHostAndPlayersOnly() {
+        assertThat(interceptor.maySubscribe(topic("leaderboard"), user(PLAYER))).isTrue();
+        assertThat(interceptor.maySubscribe(topic("leaderboard"), user(HOST))).isTrue();
+        assertThat(interceptor.maySubscribe(topic("leaderboard"), user(STRANGER))).isFalse();
+    }
+
+    @Test
     void anyConnectedUserMaySubscribeToTheirOwnQueues() {
         assertThat(interceptor.maySubscribe("/user/queue/errors", user(STRANGER))).isTrue();
     }
