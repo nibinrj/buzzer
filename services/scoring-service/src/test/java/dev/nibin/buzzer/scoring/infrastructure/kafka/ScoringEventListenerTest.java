@@ -5,6 +5,7 @@ import dev.nibin.buzzer.events.EventHeaders;
 import dev.nibin.buzzer.events.SessionEnded;
 import dev.nibin.buzzer.events.SessionLifecycle;
 import dev.nibin.buzzer.events.SessionStarted;
+import dev.nibin.buzzer.scoring.RedisTestcontainer;
 import dev.nibin.buzzer.scoring.RedpandaTestcontainer;
 import dev.nibin.buzzer.scoring.TestcontainersConfiguration;
 import dev.nibin.buzzer.scoring.infrastructure.persistence.JdbcScoringRepository;
@@ -49,6 +50,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -58,7 +60,7 @@ import static org.mockito.Mockito.verify;
  * own session id, so its records share one partition and are read in the order they were sent.
  */
 @SpringBootTest
-@Import({TestcontainersConfiguration.class, RedpandaTestcontainer.class})
+@Import({TestcontainersConfiguration.class, RedisTestcontainer.class, RedpandaTestcontainer.class})
 class ScoringEventListenerTest {
 
     private static final Duration WAIT = Duration.ofSeconds(30);
@@ -84,6 +86,9 @@ class ScoringEventListenerTest {
 
     @MockitoSpyBean
     private EventReader reader;
+
+    @MockitoSpyBean
+    private KafkaScoreUpdatePublisher publisher;
 
     private final UUID session = UUID.randomUUID();
 
@@ -151,6 +156,23 @@ class ScoringEventListenerTest {
                 && session.toString().equals(record.key())));
         verify(reader).read(argThat(record -> (AnswerSubmitted.TOPIC + "-retry-1000").equals(record.topic())
                 && session.toString().equals(record.key())));
+    }
+
+    @Test
+    void aScoreUpdateThatFailsToPublishIsSentAgainFromTheRetryTopicWhileTheScoreCountsOnce() throws Exception {
+        UUID dan = UUID.randomUUID();
+        doThrow(new IllegalStateException("broker down")).doCallRealMethod()
+                .when(publisher).publish(argThat(update -> session.equals(update.sessionId())));
+        AnswerSubmitted answer = answer(dan, true, 1);
+
+        send(answer); // scored and committed, then the publish fails: the record goes to -retry-1000
+
+        verify(publisher, timeout(WAIT.toMillis()).times(2))
+                .publish(argThat(update -> session.equals(update.sessionId())));
+        assertThat(score(dan)).contains(new Score(1000, 1, 1)); // the retry skipped the score...
+        verify(scoring, times(2)).markProcessed(answer.eventId()); // ...because it was already processed
+        assertThat(jdbc.sql("SELECT version FROM scoring_sessions WHERE session_id = :session")
+                .param("session", session).query(Long.class).single()).isEqualTo(1); // bumped once, not twice
     }
 
     @Test

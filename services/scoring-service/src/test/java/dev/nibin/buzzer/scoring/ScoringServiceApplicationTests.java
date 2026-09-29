@@ -1,12 +1,9 @@
 package dev.nibin.buzzer.scoring;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 
-/** The whole app starts against real Postgres (Flyway migrates it) and a real broker. */
-@SpringBootTest
-@Import({TestcontainersConfiguration.class, RedpandaTestcontainer.class})
+/** The whole app starts against real Postgres (Flyway migrates it), Redis and a real broker. */
+@ScoringIntegrationTest
 class ScoringServiceApplicationTests {
 
     @Test

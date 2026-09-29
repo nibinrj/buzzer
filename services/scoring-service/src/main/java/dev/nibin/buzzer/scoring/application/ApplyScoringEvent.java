@@ -32,6 +32,8 @@ public class ApplyScoringEvent {
         }
         scoring.addAnswer(event.sessionId(), event.playerId(), Points.of(event.correct(), event.correctRank()),
                 event.correct());
+        // Same transaction: the version counts exactly the answers the totals contain.
+        scoring.bumpVersion(event.sessionId());
         return true;
     }
 

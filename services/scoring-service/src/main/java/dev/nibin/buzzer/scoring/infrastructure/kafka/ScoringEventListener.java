@@ -6,6 +6,7 @@ import dev.nibin.buzzer.events.SessionEnded;
 import dev.nibin.buzzer.events.SessionLifecycle;
 import dev.nibin.buzzer.events.SessionStarted;
 import dev.nibin.buzzer.scoring.application.ApplyScoringEvent;
+import dev.nibin.buzzer.scoring.application.PublishLeaderboard;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -52,11 +53,14 @@ public class ScoringEventListener {
 
     private final EventReader reader;
     private final ApplyScoringEvent apply;
+    private final PublishLeaderboard publishLeaderboard;
     private final MeterRegistry meters;
 
-    public ScoringEventListener(EventReader reader, ApplyScoringEvent apply, MeterRegistry meters) {
+    public ScoringEventListener(EventReader reader, ApplyScoringEvent apply, PublishLeaderboard publishLeaderboard,
+            MeterRegistry meters) {
         this.reader = reader;
         this.apply = apply;
+        this.publishLeaderboard = publishLeaderboard;
         this.meters = meters;
     }
 
@@ -69,7 +73,13 @@ public class ScoringEventListener {
     @KafkaListener(topics = {AnswerSubmitted.TOPIC, SessionLifecycle.TOPIC}, groupId = "${spring.kafka.consumer.group-id}")
     public void onEvent(ConsumerRecord<String, String> record, Acknowledgment ack) {
         boolean applied = switch (reader.read(record)) {
-            case AnswerSubmitted event -> apply.answerSubmitted(event);
+            case AnswerSubmitted event -> {
+                boolean scored = apply.answerSubmitted(event);
+                // After the commit, and ALSO for a redelivery (scored == false): if Redis or Kafka failed on an
+                // earlier attempt, this is the retry that repairs it. Both steps are safe to repeat.
+                publishLeaderboard.afterAnswer(event.sessionId(), event.playerId());
+                yield scored;
+            }
             case SessionStarted event -> apply.sessionStarted(event);
             case SessionEnded event -> apply.sessionEnded(event);
             default -> throw new IllegalStateException("EventReader returned an unexpected type");
@@ -78,7 +88,7 @@ public class ScoringEventListener {
             log.debug("Already applied, skipped: topic={} partition={} offset={}", record.topic(),
                     record.partition(), record.offset());
         }
-        ack.acknowledge(); // after the commit above: never before
+        ack.acknowledge(); // after the commit and the leaderboard above: never before
     }
 
     /**

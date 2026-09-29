@@ -6,6 +6,12 @@ spring:
     url: ${SCORING_DB_URL:jdbc:postgresql://localhost:5432/scoring_db}
     username: ${SCORING_DB_USERNAME:scoring_app}
     password: ${SCORING_DB_PASSWORD}
+  data:
+    redis:
+      # Non-secret local defaults; the password has no default and must come from the environment.
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD}
   kafka:
     # Local default: docker-compose's Redpanda (its external listener). In AWS, MSK's bootstrap brokers.
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
@@ -23,9 +29,34 @@ spring:
       # ack.acknowledge() commits the offset right away, on the consumer thread.
       ack-mode: manual_immediate
     producer:
-      # Only used to forward failed records to the retry topics and the DLT.
-      # acks=all: a forwarded record is safe on every in-sync replica before the original's offset moves on.
+      # Publishes ScoreUpdated, and forwards failed records to the retry topics and the DLT.
+      # acks=all: acknowledged only once every in-sync replica has the record.
       acks: all
+      properties:
+        # Fail a send within seconds, not the client defaults (up to 60 s blocked, 120 s delivery): the consumer
+        # thread waits for it, and a failure should reach the retry path quickly.
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
+
+scoring:
+  security:
+    jwt:
+      # identity-service's public keys. Fetched on the first request, so scoring-service starts even
+      # while identity is down. In AWS this comes from the environment (the service's internal address).
+      jwk-set-uri: ${IDENTITY_JWKS_URI:http://localhost:8081/.well-known/jwks.json}
+      issuer: buzzer-identity
+  leaderboard:
+    # A session's Redis leaderboard expires this long after its last write. Only a copy: GET /leaderboard
+    # rebuilds it from Postgres when it's gone.
+    ttl: 24h
+  score-updates:
+    # How long the consumer thread waits for the broker to acknowledge a ScoreUpdated. Longer than
+    # delivery.timeout.ms above, so a send fails before we stop waiting.
+    send-timeout: 15s
+    # Used only when this service creates scoring.score-updated. 3 on a real multi-broker cluster.
+    topic-partitions: 3
+    topic-replicas: ${KAFKA_TOPIC_REPLICAS:1}
 
 management:
   endpoints:

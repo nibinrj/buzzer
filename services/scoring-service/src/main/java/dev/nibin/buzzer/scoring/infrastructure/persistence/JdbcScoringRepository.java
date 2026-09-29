@@ -1,9 +1,14 @@
 package dev.nibin.buzzer.scoring.infrastructure.persistence;
 
+import dev.nibin.buzzer.scoring.domain.PlayerPoints;
+import dev.nibin.buzzer.scoring.domain.PlayerTotal;
 import dev.nibin.buzzer.scoring.domain.ScoringRepository;
+import dev.nibin.buzzer.scoring.domain.ScoringSession;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -53,6 +58,20 @@ public class JdbcScoringRepository implements ScoringRepository {
                 .update();
     }
 
+    /**
+     * All of a session's answers are on one partition, read by one consumer thread, so this row is normally updated
+     * by one transaction at a time; only a retry-topic thread can overlap, and then Postgres's row lock queues it.
+     */
+    @Override
+    public void bumpVersion(UUID sessionId) {
+        jdbc.sql("""
+                        INSERT INTO scoring_sessions (session_id, version) VALUES (:sessionId, 1)
+                        ON CONFLICT (session_id) DO UPDATE SET version = scoring_sessions.version + 1
+                        """)
+                .param("sessionId", sessionId)
+                .update();
+    }
+
     @Override
     public void sessionStarted(UUID sessionId, int questionCount, long startedAtMs) {
         jdbc.sql("""
@@ -77,5 +96,41 @@ public class JdbcScoringRepository implements ScoringRepository {
                 .param("sessionId", sessionId)
                 .param("endedAtMs", endedAtMs)
                 .update();
+    }
+
+    @Override
+    public Optional<ScoringSession> session(UUID sessionId) {
+        return jdbc.sql("""
+                        SELECT session_id, question_count, started_at_ms, ended_at_ms, version
+                        FROM scoring_sessions WHERE session_id = :sessionId
+                        """)
+                .param("sessionId", sessionId)
+                .query(ScoringSession.class)
+                .optional();
+    }
+
+    @Override
+    public Optional<PlayerPoints> pointsOf(UUID sessionId, UUID playerId) {
+        return jdbc.sql("""
+                        SELECT player_id, points FROM player_scores
+                        WHERE session_id = :sessionId AND player_id = :playerId
+                        """)
+                .param("sessionId", sessionId)
+                .param("playerId", playerId)
+                .query(PlayerPoints.class)
+                .optional();
+    }
+
+    /** Ties by player_id DESC: Postgres compares uuids byte by byte, the same order as Redis's ZREVRANGE members. */
+    @Override
+    public List<PlayerTotal> totals(UUID sessionId) {
+        return jdbc.sql("""
+                        SELECT player_id, points, answers, correct_answers FROM player_scores
+                        WHERE session_id = :sessionId
+                        ORDER BY points DESC, player_id DESC
+                        """)
+                .param("sessionId", sessionId)
+                .query(PlayerTotal.class)
+                .list();
     }
 }
