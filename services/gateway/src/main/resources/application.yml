@@ -109,3 +109,26 @@ management:
     web:
       exposure:
         include: health,info
+
+logging:
+  structured:
+    format:
+      # One JSON object per line in Elastic Common Schema (ECS): what containers, CloudWatch and any log search get.
+      # MDC entries (traceId, sessionId, ...) become fields of the line. For readable lines, the "human" profile below.
+      console: ecs
+  level:
+    # At DEBUG this filter logs every request header, Authorization included (found by LogSafetyTest). Pinned to INFO,
+    # so turning on DEBUG for org.springframework.cloud.gateway to investigate something never prints a token.
+    org.springframework.cloud.gateway.filter.headers.observation: INFO
+
+---
+# Classic one-line-per-event text for a terminal. .\tasks.ps1 run activates it (unless -Json).
+# An empty format means "not structured": Boot falls back to its usual pattern.
+spring:
+  config:
+    activate:
+      on-profile: human
+logging:
+  structured:
+    format:
+      console: ""

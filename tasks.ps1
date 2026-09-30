@@ -6,6 +6,7 @@
     .\tasks.ps1                              # help
     .\tasks.ps1 up
     .\tasks.ps1 run -Svc identity-service
+    .\tasks.ps1 run -Svc identity-service -Json
     .\tasks.ps1 logs -Svc postgres
 #>
 [CmdletBinding()]
@@ -14,7 +15,10 @@ param(
     [ValidateSet('help', 'up', 'down', 'nuke', 'build', 'test', 'run', 'health', 'logs', 'keys')]
     [string] $Task = 'help',
 
-    [string] $Svc
+    [string] $Svc,
+
+    # run only: log JSON lines (ECS), as in a container, instead of readable text.
+    [switch] $Json
 )
 
 Set-StrictMode -Version Latest
@@ -91,6 +95,7 @@ Usage: .\tasks.ps1 <task> [-Svc <name>]
   build    .\mvnw.cmd verify (all modules, with tests)
   test     .\mvnw.cmd test
   run      Run one service with .env loaded, JVM in UTC: .\tasks.ps1 run -Svc identity-service
+           Readable log lines; add -Json for the JSON lines a container writes
   health   GET /actuator/health on ports 8080-8084
   logs     Follow stack logs: .\tasks.ps1 logs [-Svc postgres]
   keys     Generate the RS256 JWT key pair into .secrets\ (never overwrites)
@@ -150,8 +155,12 @@ try {
                 }
                 # The app runs in its own JVM; UTC because postgres:16 rejects the Windows JDK's
                 # default zone name "Asia/Calcutta" (same reason as surefire's argLine in the root pom).
-                Invoke-Native $mvnw @('-pl', "services/$Svc", 'spring-boot:run',
+                # Services log JSON by default (what a container writes); the "human" profile switches a
+                # terminal back to readable lines. -Json skips it.
+                $runArgs = @('-pl', "services/$Svc", 'spring-boot:run',
                     '-Dspring-boot.run.jvmArguments=-Duser.timezone=UTC')
+                if (-not $Json) { $runArgs += '-Dspring-boot.run.profiles=human' }
+                Invoke-Native $mvnw $runArgs
             }
             finally {
                 foreach ($name in $previous.Keys) {
