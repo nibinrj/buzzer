@@ -2,11 +2,13 @@ package dev.nibin.buzzer.session.infrastructure.kafka;
 
 import dev.nibin.buzzer.events.EventHeaders;
 import dev.nibin.buzzer.events.ScoreUpdated;
+import dev.nibin.buzzer.session.application.LogContext;
 import dev.nibin.buzzer.session.application.PushLeaderboard;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.Header;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
@@ -42,6 +44,17 @@ public class ScoreUpdatedListener {
 
     @KafkaListener(id = ID, topics = ScoreUpdated.TOPIC, groupId = "${spring.kafka.consumer.group-id}")
     public void onScoreUpdated(ConsumerRecord<String, String> record) {
+        // The key is the sessionId (scoring-service keys by session). Taken from the key, not the JSON, so the
+        // lines about a record that can't be read are labelled too. Removed in finally: the consumer thread is reused.
+        LogContext.putIfUuid(LogContext.SESSION_ID, record.key());
+        try {
+            handle(record);
+        } finally {
+            MDC.remove(LogContext.SESSION_ID);
+        }
+    }
+
+    private void handle(ConsumerRecord<String, String> record) {
         ScoreUpdated update = read(record);
         if (update != null) {
             pushLeaderboard.push(update);

@@ -4,6 +4,8 @@ import com.github.tomakehurst.wiremock.WireMockServer;
 import dev.nibin.buzzer.session.ApiIntegrationTest;
 import dev.nibin.buzzer.session.TestTokens;
 import dev.nibin.buzzer.session.application.JoinSession;
+import dev.nibin.buzzer.session.application.LogContext;
+import dev.nibin.buzzer.session.application.SubmitAnswer;
 import dev.nibin.buzzer.session.domain.Answer;
 import dev.nibin.buzzer.session.domain.AnswerRepository;
 import dev.nibin.buzzer.session.domain.LiveState;
@@ -16,7 +18,12 @@ import dev.nibin.buzzer.session.domain.SessionRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.logging.LogLevel;
+import org.springframework.boot.logging.LoggingSystem;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.messaging.converter.CompositeMessageConverter;
 import org.springframework.messaging.converter.JacksonJsonMessageConverter;
@@ -29,6 +36,8 @@ import org.springframework.messaging.simp.user.SimpUserRegistry;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.lang.reflect.Type;
 import java.security.SecureRandom;
@@ -42,6 +51,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
@@ -55,6 +65,7 @@ import static org.assertj.core.api.Assertions.fail;
  * the host reveals) and every refusal of the two interceptors.
  */
 @ApiIntegrationTest
+@ExtendWith(OutputCaptureExtension.class)
 class SessionWebSocketTest {
 
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -84,6 +95,9 @@ class SessionWebSocketTest {
 
     @Autowired
     private PlayerRepository players;
+
+    @Autowired
+    private LoggingSystem loggingSystem;
 
     private final WebSocketStompClient stompClient = stompClient();
     private final List<StompSession> connections = new ArrayList<>();
@@ -213,6 +227,39 @@ class SessionWebSocketTest {
                 .containsEntry("seq", 1);
         assertThat(answers.find(session.id(), questionId(0), playerIdOf(ada)).orElseThrow().optionIndex())
                 .isEqualTo(1); // the first answer stands
+    }
+
+    /**
+     * The line SubmitAnswer writes (DEBUG, switched on for this test only) is written on the inbound channel's
+     * executor thread, not the thread the frame arrived on, and still carries the session and user
+     * (StompLogContextInterceptor) and the player (SubmitAnswer). The token sent on CONNECT appears nowhere.
+     */
+    @Test
+    void anAnswersLogLineCarriesSessionUserAndPlayerAndTheTokenIsNeverLogged(CapturedOutput output)
+            throws Exception {
+        String token = guestToken(ada);
+        StompSession adaConnection = connect(token);
+        BlockingQueue<Map<String, Object>> acks = subscribe(adaConnection, ACKS);
+        startAndAwaitFirstQuestion(adaConnection);
+        awaitUserQueue(ada, ACKS, 1);
+
+        loggingSystem.setLogLevel(SubmitAnswer.class.getName(), LogLevel.DEBUG);
+        try {
+            adaConnection.send(command("answer"), answer(0, 0));
+            assertThat(next(acks)).containsEntry("accepted", true);
+        } finally {
+            loggingSystem.setLogLevel(SubmitAnswer.class.getName(), null);
+        }
+
+        JsonNode line = logLines(output)
+                .filter(json -> json.path("message").asString().startsWith("Answer ACCEPTED"))
+                .filter(json -> json.path(LogContext.SESSION_ID).asString().equals(session.id().toString()))
+                .findFirst().orElseThrow();
+        assertThat(line.path(LogContext.USER_ID).asString()).isEqualTo(ada.toString());
+        assertThat(line.path(LogContext.PLAYER_ID).asString()).isEqualTo(playerIdOf(ada).toString());
+        // Not the Tomcat thread the frame arrived on (where preSend runs), yet the MDC is there.
+        assertThat(line.path("process").path("thread").path("name").asString()).doesNotStartWith("http-nio");
+        assertThat(output.getAll()).doesNotContain(token);
     }
 
     @Test
@@ -419,6 +466,12 @@ class SessionWebSocketTest {
 
     private UUID questionId(int index) {
         return session.questions().get(index).questionId();
+    }
+
+    /** The captured JSON log lines (application.yml: ECS on the console); anything else is skipped. */
+    private static Stream<JsonNode> logLines(CapturedOutput output) {
+        JsonMapper json = JsonMapper.builder().build();
+        return output.getOut().lines().filter(line -> line.startsWith("{")).map(json::readTree);
     }
 
     private UUID playerIdOf(UUID user) {

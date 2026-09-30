@@ -6,6 +6,7 @@ import dev.nibin.buzzer.events.ScoreUpdated;
 import dev.nibin.buzzer.session.ApiIntegrationTest;
 import dev.nibin.buzzer.session.TestTokens;
 import dev.nibin.buzzer.session.application.JoinSession;
+import dev.nibin.buzzer.session.application.LogContext;
 import dev.nibin.buzzer.session.domain.LiveStateRepository;
 import dev.nibin.buzzer.session.domain.RoomCode;
 import dev.nibin.buzzer.session.domain.Session;
@@ -15,7 +16,10 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -31,6 +35,7 @@ import org.springframework.messaging.simp.user.SimpUserRegistry;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.lang.reflect.Type;
@@ -58,6 +63,7 @@ import static org.awaitility.Awaitility.await;
  * player receives what ScoreUpdatedListener pushed through the Redis relay.
  */
 @ApiIntegrationTest
+@ExtendWith(OutputCaptureExtension.class)
 class LeaderboardPushTest {
 
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -143,6 +149,26 @@ class LeaderboardPushTest {
 
         assertThat(version(next(leaderboards))).isEqualTo(1);
         assertThat(leaderboards.poll(QUIET.toMillis(), TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    /**
+     * The listener labels its lines with the session from the record's KEY, so even the line about a record whose
+     * JSON can't be read says which session it belonged to.
+     */
+    @Test
+    void theLineAboutAnUnreadableRecordCarriesTheSessionFromItsKey(CapturedOutput output) throws Exception {
+        BlockingQueue<Map<String, Object>> leaderboards = subscribeAsAda();
+
+        send(session.id(), "ScoreUpdated", "{\"sessionId\": ");
+        send(update(session.id(), 1, List.of()));
+        // Same key, same partition: once this one arrived, the unreadable one before it has been handled.
+        assertThat(version(next(leaderboards))).isEqualTo(1);
+
+        JsonNode line = output.getOut().lines().filter(l -> l.startsWith("{")).map(json::readTree)
+                .filter(l -> l.path("message").asString().startsWith("Skipped an unreadable ScoreUpdated"))
+                .filter(l -> l.path(LogContext.SESSION_ID).asString().equals(session.id().toString()))
+                .findFirst().orElseThrow();
+        assertThat(line.path("log").path("logger").asString()).isEqualTo(ScoreUpdatedListener.class.getName());
     }
 
     @Test

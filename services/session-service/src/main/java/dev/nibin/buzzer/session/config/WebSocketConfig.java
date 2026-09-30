@@ -2,6 +2,7 @@ package dev.nibin.buzzer.session.config;
 
 import dev.nibin.buzzer.session.api.websocket.DestinationAuthorizationInterceptor;
 import dev.nibin.buzzer.session.api.websocket.JwtConnectInterceptor;
+import dev.nibin.buzzer.session.api.websocket.StompLogContextInterceptor;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
@@ -34,6 +35,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private final WebSocketProperties properties;
     private final JwtConnectInterceptor jwtConnectInterceptor;
     private final DestinationAuthorizationInterceptor destinationAuthorization;
+    private final StompLogContextInterceptor logContext;
     private final TaskScheduler messageBrokerTaskScheduler;
 
     /**
@@ -42,11 +44,12 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
      * (The pattern from the Spring reference docs for simple-broker heartbeats.)
      */
     public WebSocketConfig(WebSocketProperties properties, JwtConnectInterceptor jwtConnectInterceptor,
-            DestinationAuthorizationInterceptor destinationAuthorization,
+            DestinationAuthorizationInterceptor destinationAuthorization, StompLogContextInterceptor logContext,
             @Lazy @Qualifier("messageBrokerTaskScheduler") TaskScheduler messageBrokerTaskScheduler) {
         this.properties = properties;
         this.jwtConnectInterceptor = jwtConnectInterceptor;
         this.destinationAuthorization = destinationAuthorization;
+        this.logContext = logContext;
         this.messageBrokerTaskScheduler = messageBrokerTaskScheduler;
     }
 
@@ -64,9 +67,12 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                 .setTaskScheduler(messageBrokerTaskScheduler);
     }
 
-    /** Order matters: authenticate on CONNECT first, then check destinations of every later frame. */
+    /**
+     * Order matters: authenticate on CONNECT first, then check destinations of every later frame. logContext acts
+     * later, on the thread that handles the frame (beforeHandle), so it sees the user the first one set.
+     */
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(jwtConnectInterceptor, destinationAuthorization);
+        registration.interceptors(jwtConnectInterceptor, destinationAuthorization, logContext);
     }
 }

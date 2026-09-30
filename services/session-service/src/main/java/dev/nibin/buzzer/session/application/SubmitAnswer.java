@@ -12,6 +12,7 @@ import dev.nibin.buzzer.session.domain.SessionQuestion;
 import dev.nibin.buzzer.session.domain.SessionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionOperations;
 
@@ -63,6 +64,15 @@ public class SubmitAnswer {
      */
     public Result submit(UUID sessionId, UUID userId, UUID questionId, Integer optionIndex) {
         Player player = players.find(sessionId, userId).orElseThrow(SessionNotFoundException::new);
+        // The caller arrives as a user; which player that is in this session is only known from here on.
+        try (var ignored = MDC.putCloseable(LogContext.PLAYER_ID, player.playerId().toString())) {
+            Result result = submitAs(sessionId, player, questionId, optionIndex);
+            log.debug("Answer {}: question={} seq={}", result.reason(), questionId, result.seq());
+            return result;
+        }
+    }
+
+    private Result submitAs(UUID sessionId, Player player, UUID questionId, Integer optionIndex) {
         Session session = sessions.findById(sessionId).orElseThrow(SessionNotFoundException::new);
 
         int questionIndex = indexOf(session.questions(), questionId);
