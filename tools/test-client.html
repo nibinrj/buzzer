@@ -5,6 +5,8 @@
       & "$env:JAVA_HOME\bin\jwebserver.exe" -d (Resolve-Path .\tools).Path -p 5173
   (the JDK's own tiny web server, localhost only) then open http://localhost:5173/test-client.html
   Tokens live in memory only. Server text is rendered with textContent, never innerHTML.
+  Players answer by clicking an option (ack shown under the question); the host reveals; everyone sees the live
+  leaderboard (pushed by session-service from scoring's ScoreUpdated, reloaded from scoring on every reconnect).
 -->
 <html lang="en">
 <head>
@@ -57,6 +59,7 @@
   .options { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
   .options button { background: transparent; color: var(--text); border-color: var(--line); padding: 12px; text-align: left; }
   .options button.chosen { border-color: var(--accent); outline: 2px solid var(--accent); }
+  .options button.correct { border-color: var(--ok); outline: 2px solid var(--ok); }
   .error { color: var(--bad); font-size: 13px; min-height: 1em; margin-top: 6px; }
   ul.players { margin: 4px 0 0; padding-left: 18px; }
   #log { grid-column: 1 / -1; }
@@ -98,7 +101,7 @@
       <div class="row">
         <button data-command="start">start</button>
         <button data-command="next">next</button>
-        <button data-command="reveal" title="Authorized, but no handler until batch 4.3">reveal</button>
+        <button data-command="reveal">reveal</button>
         <button data-command="end">end</button>
         <button id="hostRefresh" class="secondary">Reload state</button>
       </div>
@@ -134,6 +137,8 @@
       <div id="options" class="options"></div>
       <div id="answerNote" class="muted"></div>
     </div>
+    <h3>Leaderboard <span id="leaderboardVersion" class="muted"></span></h3>
+    <ol id="leaderboard" class="players"><li class="muted">(no scores yet)</li></ol>
     <h3>Players</h3>
     <ul id="players" class="players"><li class="muted">(reload state to see the roster)</li></ul>
   </section>
@@ -161,6 +166,12 @@ const state = {
   stomp: null,          // StompJs.Client
   deadline: null,       // Date of the running question's deadline
   timer: null,
+  questionId: null,     // the running question: what an answer is for
+  names: new Map(),     // playerId -> displayName, from /state (the leaderboard carries ids only)
+  leaderboardVersion: -1, // highest leaderboard version shown: an older push or reply is ignored
+  lastBoard: null,      // redrawn when the roster (names) changes
+  rosterAskedFor: -1,   // leaderboard version that last triggered a roster fetch: at most one per version
+  rosterTimer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -188,7 +199,7 @@ function log(kind, text) {
  * Calls the API through the base URL (the gateway by default). Logs method, path, status, and the response body
  * except for /api/auth/** (tokens). Request bodies are never logged (passwords). Throws with the ProblemDetail text.
  */
-async function api(method, path, body) {
+async function api(method, path, body, { notFoundIsNull = false } = {}) {
   const headers = { "Accept": "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (state.token && !path.startsWith("/api/auth/")) headers["Authorization"] = "Bearer " + state.token;
@@ -202,6 +213,10 @@ async function api(method, path, body) {
   const text = await response.text();
   const json = text ? safeJson(text) : null;
   const shown = path.startsWith("/api/auth/") ? "(body not logged: tokens)" : text;
+  if (response.status === 404 && notFoundIsNull) {
+    log("rest", `${method} ${path} → 404 (nothing there yet)`);
+    return null;
+  }
   log(response.ok ? "rest" : "err", `${method} ${path} → ${response.status} ${shown}`);
   if (!response.ok) {
     const problem = json && (json.detail || json.title);
@@ -247,11 +262,17 @@ function connect() {
       const topic = "/topic/sessions/" + state.sessionId;
       client.subscribe(topic + "/question", (m) => showQuestion(JSON.parse(m.body)));
       client.subscribe(topic + "/status", (m) => showStatus(JSON.parse(m.body).status));
+      client.subscribe(topic + "/reveal", (m) => showReveal(JSON.parse(m.body)));
+      client.subscribe(topic + "/leaderboard", (m) => showLeaderboard(JSON.parse(m.body)));
+      if (role() === "player") {
+        client.subscribe("/user/queue/answer-ack", (m) => showAck(JSON.parse(m.body)));
+      }
       client.subscribe("/user/queue/errors", (m) => {
         const error = JSON.parse(m.body);
         showError(`${error.title}: ${error.detail}`);
       });
       reloadState();
+      reloadLeaderboard();
     },
     onStompError: (frame) => {
       // The server refused something (bad token, forbidden destination) and closes the connection.
@@ -293,6 +314,7 @@ function showStatus(status) {
 }
 
 function showQuestion(q) {
+  state.questionId = q.questionId;
   $("questionBox").classList.remove("hidden");
   $("questionIndex").textContent = "Question " + (q.index + 1);
   $("questionText").textContent = q.text;
@@ -314,14 +336,110 @@ function showQuestion(q) {
 }
 
 /**
- * Not sent yet: /app/sessions/{id}/answer arrives in batch 4.3. Until then the server's destination check would
- * refuse that SEND and close this player's connection.
+ * Sends the answer; the server's verdict comes back on /user/queue/answer-ack (this connection only). Clicking
+ * again is allowed on purpose: the second answer is refused as DUPLICATE, with the first one's place in line.
  */
 function choose(button, index) {
+  if (!state.stomp || !state.stomp.connected) {
+    showError("Not connected.");
+    return;
+  }
   document.querySelectorAll("#options button").forEach((b) => b.classList.remove("chosen"));
   button.classList.add("chosen");
-  $("answerNote").textContent = "Picked option " + index + ". Not sent: answers arrive in batch 4.3.";
-  log("rest", `(local) picked option ${index}; nothing sent until batch 4.3`);
+  $("answerNote").textContent = "Sent option " + String.fromCharCode(65 + index) + "…";
+  state.stomp.publish({
+    destination: `/app/sessions/${state.sessionId}/answer`,
+    body: JSON.stringify({ questionId: state.questionId, optionId: index }),
+  });
+}
+
+/** The ack says nothing about correctness: that comes with the reveal. */
+function showAck(ack) {
+  if (ack.questionId !== state.questionId) return; // a late ack for an earlier question
+  $("answerNote").textContent = ack.accepted
+    ? `Accepted: #${ack.seq} in line.`
+    : `Refused: ${ack.reason}` + (ack.seq ? ` (your first answer was #${ack.seq})` : "");
+}
+
+/** The host revealed: mark the correct option. The question stays on screen, closed. */
+function showReveal(r) {
+  if (r.questionId !== state.questionId) return;
+  document.querySelectorAll("#options button").forEach((b, i) => {
+    b.classList.toggle("correct", i === r.correctOption);
+    b.disabled = true;
+  });
+  $("answerNote").textContent += "  Correct: " + String.fromCharCode(65 + r.correctOption) + ".";
+  stopCountdown();
+  $("countdown").textContent = "revealed";
+}
+
+/**
+ * The live top 10, from a push or from scoring's GET /leaderboard. Both carry the same version; the older one
+ * of the two is ignored, whichever arrives last. Names come from the roster, which only /state carries.
+ */
+function showLeaderboard(board) {
+  if (board.version < state.leaderboardVersion) return;
+  state.leaderboardVersion = board.version;
+  state.lastBoard = board;
+  $("leaderboardVersion").textContent = "v" + board.version;
+  const list = $("leaderboard");
+  list.replaceChildren();
+  if (board.top.length === 0) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = "(no scores yet)";
+    list.appendChild(li);
+  }
+  let unknown = false;
+  board.top.forEach((line) => {
+    const name = state.names.get(line.playerId);
+    unknown ||= !name;
+    const li = document.createElement("li");
+    li.value = line.rank; // ties share a rank: 1, 2, 2, 4
+    li.textContent = (name || "player " + line.playerId.substring(0, 8)) + " — " + line.points;
+    list.appendChild(li);
+  });
+  if (unknown && state.rosterAskedFor !== board.version) {
+    state.rosterAskedFor = board.version;
+    refreshRosterSoon();
+  }
+}
+
+/**
+ * Someone joined after our last /state: fetch the roster once (not once per leaderboard), and only the roster.
+ * A full reloadState would redraw the question and wipe this player's ack.
+ */
+function refreshRosterSoon() {
+  if (state.rosterTimer) return;
+  state.rosterTimer = setTimeout(async () => {
+    state.rosterTimer = null;
+    if (!state.sessionId) return;
+    try {
+      const s = await api("GET", `/api/sessions/${state.sessionId}/state`);
+      setRoster(s.players);
+    } catch (e) {
+      showError(e.message);
+    }
+  }, 1000);
+}
+
+/** New names: redraw the roster and the last leaderboard with them. */
+function setRoster(players) {
+  state.names = new Map(players.map((p) => [p.playerId, p.displayName]));
+  showPlayers(players);
+  if (state.lastBoard) showLeaderboard(state.lastBoard);
+}
+
+/** scoring-service's current leaderboard (via the gateway). 404 = no answer scored yet. */
+async function reloadLeaderboard() {
+  if (!state.sessionId) return;
+  try {
+    const board = await api("GET", `/api/results/sessions/${state.sessionId}/leaderboard`, undefined,
+        { notFoundIsNull: true });
+    if (board) showLeaderboard(board);
+  } catch (e) {
+    showError(e.message);
+  }
 }
 
 function hideQuestion() {
@@ -376,8 +494,11 @@ async function reloadState() {
     showStatus(s.status);
     if (s.currentQuestion) {
       showQuestion({ ...s.currentQuestion, deadline: s.questionDeadline });
+      if (s.currentQuestion.revealed) {
+        showReveal({ questionId: s.currentQuestion.questionId, correctOption: s.currentQuestion.revealedOption });
+      }
     }
-    showPlayers(s.players);
+    setRoster(s.players);
   } catch (e) {
     showError(e.message);
   }
@@ -446,7 +567,10 @@ $("playerRefresh").addEventListener("click", reloadState);
 document.querySelectorAll('input[name="role"]').forEach((r) => r.addEventListener("change", () => {
   disconnect();
   hideQuestion();
-  Object.assign(state, { token: null, sessionId: null });
+  Object.assign(state, { token: null, sessionId: null, questionId: null, names: new Map(), leaderboardVersion: -1,
+    lastBoard: null, rosterAskedFor: -1 });
+  showLeaderboard({ version: -1, top: [] });
+  $("leaderboardVersion").textContent = "";
   $("hostView").classList.toggle("hidden", role() !== "host");
   $("playerView").classList.toggle("hidden", role() !== "player");
   $("createSession").disabled = true;
