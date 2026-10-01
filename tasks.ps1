@@ -96,7 +96,7 @@ Usage: .\tasks.ps1 <task> [-Svc <name>]
   test     .\mvnw.cmd test
   run      Run one service with .env loaded, JVM in UTC: .\tasks.ps1 run -Svc identity-service
            Readable log lines; add -Json for the JSON lines a container writes
-  health   GET /actuator/health on ports 8080-8084
+  health   GET /actuator/health on the management ports 9080-9084
   logs     Follow stack logs: .\tasks.ps1 logs [-Svc postgres]
   keys     Generate the RS256 JWT key pair into .secrets\ (never overwrites)
 '@

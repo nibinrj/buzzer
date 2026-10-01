@@ -6,12 +6,13 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# The management ports (management.server.port): actuator is not served on the services' own ports.
 $services = [ordered]@{
-    'gateway'          = 8080
-    'identity-service' = 8081
-    'quiz-service'     = 8082
-    'session-service'  = 8083
-    'scoring-service'  = 8084
+    'gateway'          = 9080
+    'identity-service' = 9081
+    'quiz-service'     = 9082
+    'session-service'  = 9083
+    'scoring-service'  = 9084
 }
 
 $results = foreach ($entry in $services.GetEnumerator()) {

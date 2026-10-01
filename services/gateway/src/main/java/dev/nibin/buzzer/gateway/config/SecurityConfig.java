@@ -56,7 +56,9 @@ public class SecurityConfig {
                 // never carrying a token) is answered here instead of being refused with 401.
                 .cors(Customizer.withDefaults())
                 .authorizeExchange(exchange -> exchange
-                        .pathMatchers("/actuator/health", "/actuator/info").permitAll()
+                        // This chain also guards the management port, and Prometheus sends no token. Actuator is
+                        // served ONLY there (management.server.port): on the public port these paths are 404s.
+                        .pathMatchers("/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll()
                         .pathMatchers(PUBLIC_PATHS).permitAll()
                         // Everything else, routed or not, needs a valid token. Unrouted paths then 404.
                         .anyExchange().authenticated())

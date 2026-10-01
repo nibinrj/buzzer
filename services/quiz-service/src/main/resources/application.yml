@@ -23,10 +23,23 @@ server:
   port: 8082
 
 management:
+  server:
+    # Actuator on a port of its own, never the public one. Prometheus scrapes it; no route, ALB or Ingress exposes
+    # it. MANAGEMENT_SERVER_PORT overrides it (Boot relaxed binding), e.g. in a container.
+    port: 9082
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
+  metrics:
+    tags:
+      # On every meter. Not "instance": Prometheus adds instance (host:port) and job itself when it scrapes.
+      application: ${spring.application.name}
+    distribution:
+      # Fixed histogram buckets instead of percentiles computed in the JVM: bucket counts add up across instances,
+      # so Prometheus can compute p95/p99 for the whole service. 10 buckets, 5 ms to 5 s.
+      slo:
+        http.server.requests: 5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s,2500ms,5s
 
 logging:
   structured:

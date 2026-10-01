@@ -60,6 +60,11 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <configuration>
                         <argLine>-Duser.timezone=UTC</argLine>
+                        <!-- Actuator on a random port in tests: each service fixes its own (9080-9084) in
+                             application.yml, and several test contexts run at once in one JVM. -->
+                        <systemPropertyVariables>
+                            <management.server.port>0</management.server.port>
+                        </systemPropertyVariables>
                     </configuration>
                 </plugin>
             </plugins>
