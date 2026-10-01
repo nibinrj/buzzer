@@ -8,6 +8,7 @@ import dev.nibin.buzzer.events.SessionStarted;
 import dev.nibin.buzzer.scoring.RedisTestcontainer;
 import dev.nibin.buzzer.scoring.RedpandaTestcontainer;
 import dev.nibin.buzzer.scoring.TestcontainersConfiguration;
+import dev.nibin.buzzer.scoring.application.LogContext;
 import dev.nibin.buzzer.scoring.infrastructure.persistence.JdbcScoringRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -23,8 +24,13 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.logging.LogLevel;
+import org.springframework.boot.logging.LoggingSystem;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -32,6 +38,7 @@ import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.nio.charset.StandardCharsets;
@@ -42,6 +49,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -61,6 +69,7 @@ import static org.mockito.Mockito.verify;
  */
 @SpringBootTest
 @Import({TestcontainersConfiguration.class, RedisTestcontainer.class, RedpandaTestcontainer.class})
+@ExtendWith(OutputCaptureExtension.class)
 class ScoringEventListenerTest {
 
     private static final Duration WAIT = Duration.ofSeconds(30);
@@ -80,6 +89,9 @@ class ScoringEventListenerTest {
 
     @Autowired
     private MeterRegistry meters;
+
+    @Autowired
+    private LoggingSystem loggingSystem;
 
     @MockitoSpyBean
     private JdbcScoringRepository scoring;
@@ -126,6 +138,50 @@ class ScoringEventListenerTest {
         assertThat(header(dead, KafkaHeaders.ORIGINAL_TOPIC)).isEqualTo(AnswerSubmitted.TOPIC);
         assertThat(header(dead, KafkaHeaders.EXCEPTION_CAUSE_FQCN)).isEqualTo(UnreadableEventException.class.getName());
         assertThat(header(dead, EventHeaders.TYPE)).isEqualTo("AnswerSubmitted");
+    }
+
+    /**
+     * The line about a skipped redelivery (DEBUG, switched on for this test only) carries the session, taken from the
+     * record's key, and the player, taken from the event.
+     */
+    @Test
+    void theLineAboutARedeliveryCarriesItsSessionAndPlayer(CapturedOutput output) throws Exception {
+        UUID ada = UUID.randomUUID();
+        AnswerSubmitted answer = answer(ada, true, 1);
+        AnswerSubmitted marker = answer(ada, false, 0);
+
+        loggingSystem.setLogLevel(ScoringEventListener.class.getName(), LogLevel.DEBUG);
+        try {
+            send(answer);
+            send(answer);
+            send(marker); // same key, same partition: once it's processed, the copy before it has been skipped
+            await().atMost(WAIT).until(() -> processed(marker.eventId()));
+        } finally {
+            loggingSystem.setLogLevel(ScoringEventListener.class.getName(), null);
+        }
+
+        JsonNode line = logLines(output)
+                .filter(json -> json.path("message").asString().startsWith("Already applied, skipped"))
+                .filter(json -> json.path(LogContext.SESSION_ID).asString().equals(session.toString()))
+                .findFirst().orElseThrow();
+        assertThat(line.path(LogContext.PLAYER_ID).asString()).isEqualTo(ada.toString());
+    }
+
+    /** A record that can't even be parsed still names its session on the DLT, from the key that survives retries. */
+    @Test
+    void theDeadLetterLineCarriesTheSessionFromTheKey(CapturedOutput output) throws Exception {
+        String dlt = AnswerSubmitted.TOPIC + "-dlt";
+        double before = deadLettered(dlt);
+
+        send(AnswerSubmitted.TOPIC, "AnswerSubmitted", "{\"eventId\": ");
+        await().atMost(WAIT).until(() -> deadLettered(dlt) == before + 1);
+
+        JsonNode line = logLines(output)
+                .filter(json -> json.path("message").asString().startsWith("Dead-lettered"))
+                .filter(json -> json.path(LogContext.SESSION_ID).asString().equals(session.toString()))
+                .findFirst().orElseThrow();
+        assertThat(line.path("log").path("level").asString()).isEqualTo("ERROR");
+        assertThat(line.has(LogContext.PLAYER_ID)).isFalse(); // never parsed, so no player
     }
 
     @Test
@@ -218,6 +274,11 @@ class ScoringEventListenerTest {
         ProducerRecord<String, String> record = new ProducerRecord<>(topic, session.toString(), value);
         record.headers().add(EventHeaders.TYPE, type.getBytes(StandardCharsets.UTF_8));
         return kafka.send(record).get(10, TimeUnit.SECONDS).getRecordMetadata();
+    }
+
+    /** The captured JSON log lines (application.yml: ECS on the console); anything else is skipped. */
+    private Stream<JsonNode> logLines(CapturedOutput output) {
+        return output.getOut().lines().filter(line -> line.startsWith("{")).map(json::readTree);
     }
 
     private boolean processed(UUID eventId) {

@@ -6,6 +6,7 @@ import dev.nibin.buzzer.events.SessionEnded;
 import dev.nibin.buzzer.events.SessionLifecycle;
 import dev.nibin.buzzer.events.SessionStarted;
 import dev.nibin.buzzer.scoring.application.ApplyScoringEvent;
+import dev.nibin.buzzer.scoring.application.LogContext;
 import dev.nibin.buzzer.scoring.application.PublishLeaderboard;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -13,6 +14,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.Header;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.kafka.annotation.BackOff;
 import org.springframework.kafka.annotation.DltHandler;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -72,8 +74,23 @@ public class ScoringEventListener {
             kafkaTemplate = "kafkaTemplate")
     @KafkaListener(topics = {AnswerSubmitted.TOPIC, SessionLifecycle.TOPIC}, groupId = "${spring.kafka.consumer.group-id}")
     public void onEvent(ConsumerRecord<String, String> record, Acknowledgment ack) {
+        // Log fields for everything below. The session from the key (session-service keys by session), so even a record
+        // that can't be parsed is labelled; the player once the answer has been read. Removed in finally: the consumer
+        // thread goes on to other sessions' records. (Spring Kafka's own lines about a failure, written after this
+        // method threw, come after the finally and are not labelled.)
+        LogContext.putIfUuid(LogContext.SESSION_ID, record.key());
+        try {
+            handle(record, ack);
+        } finally {
+            MDC.remove(LogContext.SESSION_ID);
+            MDC.remove(LogContext.PLAYER_ID);
+        }
+    }
+
+    private void handle(ConsumerRecord<String, String> record, Acknowledgment ack) {
         boolean applied = switch (reader.read(record)) {
             case AnswerSubmitted event -> {
+                MDC.put(LogContext.PLAYER_ID, event.playerId().toString());
                 boolean scored = apply.answerSubmitted(event);
                 // After the commit, and ALSO for a redelivery (scored == false): if Redis or Kafka failed on an
                 // earlier attempt, this is the retry that repairs it. Both steps are safe to repeat.
@@ -97,6 +114,16 @@ public class ScoringEventListener {
      */
     @DltHandler
     public void onDeadLetter(ConsumerRecord<String, String> record, Acknowledgment ack) {
+        // The key survives the retry topics, so a dead-lettered record still says which session is missing a score.
+        LogContext.putIfUuid(LogContext.SESSION_ID, record.key());
+        try {
+            deadLettered(record, ack);
+        } finally {
+            MDC.remove(LogContext.SESSION_ID);
+        }
+    }
+
+    private void deadLettered(ConsumerRecord<String, String> record, Acknowledgment ack) {
         Counter.builder(DEAD_LETTERED)
                 .description("Records that reached a DLT and are not applied")
                 .tag("topic", record.topic())
