@@ -74,6 +74,11 @@ class JpaSessionRepositoryAdapter implements SessionRepository {
         }
     }
 
+    @Override
+    public long countInProgress() {
+        return jpaRepository.countByStatus(Session.Status.IN_PROGRESS);
+    }
+
     private static boolean violatesRoomCodeUnique(Throwable e) {
         for (Throwable cause = e; cause != null; cause = cause.getCause()) {
             if (cause instanceof ConstraintViolationException violation) {

@@ -3,6 +3,7 @@ package dev.nibin.buzzer.session.api.websocket;
 import dev.nibin.buzzer.session.application.LiveStateUnavailableException;
 import dev.nibin.buzzer.session.application.SessionNotFoundException;
 import dev.nibin.buzzer.session.application.SubmitAnswer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.support.StaticApplicationContext;
@@ -49,6 +50,7 @@ class AnswerControllerErrorTest {
 
     private final SubmitAnswer submitAnswer = mock(SubmitAnswer.class);
     private final List<Message<?>> toBroker = new ArrayList<>();
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
     private final UUID sessionId = UUID.randomUUID();
     private final UUID user = UUID.randomUUID();
 
@@ -63,11 +65,11 @@ class AnswerControllerErrorTest {
         dispatcher.setMessageConverter(new JacksonJsonMessageConverter());
         dispatcher.setApplicationContext(new StaticApplicationContext());
         dispatcher.afterPropertiesSet();
-        dispatcher.register(new AnswerController(submitAnswer));
+        dispatcher.register(new AnswerController(submitAnswer, brokerTemplate, meters));
     }
 
     @Test
-    void anAnswerIsAckedOnTheSendersAnswerAckQueue() {
+    void anAnswerIsAckedOnTheSendersAnswerAckQueueOnTheConnectionItCameFromOnly() {
         UUID question = UUID.randomUUID();
         when(submitAnswer.submit(any(), any(), any(), any()))
                 .thenReturn(new SubmitAnswer.Result(question, SubmitAnswer.Reason.ACCEPTED, 3));
@@ -75,7 +77,10 @@ class AnswerControllerErrorTest {
         sendAnswer(question);
 
         assertThat(destinationOfReply()).isEqualTo("/user/" + user + "/queue/answer-ack");
+        // The session id header is what limits a /user/... message to one connection (as broadcast = false did).
+        assertThat(SimpMessageHeaderAccessor.getSessionId(toBroker.getFirst().getHeaders())).isEqualTo("connection-1");
         assertThat(replyBody().get("seq").asLong()).isEqualTo(3);
+        assertThat(meters.get(AnswerController.HANDLING).tag("outcome", "ACCEPTED").timer().count()).isEqualTo(1);
     }
 
     @Test

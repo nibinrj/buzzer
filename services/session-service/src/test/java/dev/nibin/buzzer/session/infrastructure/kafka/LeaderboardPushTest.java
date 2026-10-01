@@ -12,6 +12,8 @@ import dev.nibin.buzzer.session.domain.RoomCode;
 import dev.nibin.buzzer.session.domain.Session;
 import dev.nibin.buzzer.session.domain.SessionQuestion;
 import dev.nibin.buzzer.session.domain.SessionRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -98,6 +100,9 @@ class LeaderboardPushTest {
     @Autowired
     private JsonMapper json;
 
+    @Autowired
+    private MeterRegistry meters;
+
     private final WebSocketStompClient stompClient = stompClient();
     private final List<StompSession> connections = new ArrayList<>();
 
@@ -124,6 +129,8 @@ class LeaderboardPushTest {
     @Test
     void aLeaderboardOlderThanTheLastPushedOneIsNotPushed() throws Exception {
         BlockingQueue<Map<String, Object>> leaderboards = subscribeAsAda();
+        double pushed = pushes("pushed").count();
+        double older = pushes("older").count();
         UUID bob = UUID.randomUUID();
 
         send(update(session.id(), 2, List.of(new ScoreUpdated.Entry(1, bob, 1000))));
@@ -137,11 +144,15 @@ class LeaderboardPushTest {
         assertThat(first.get("top")).isEqualTo(List.of(Map.of("rank", 1, "playerId", bob.toString(), "points", 1000)));
         assertThat(version(next(leaderboards))).isEqualTo(3); // not 1
         assertThat(leaderboards.poll(QUIET.toMillis(), TimeUnit.MILLISECONDS)).isNull();
+        // buzzer.leaderboard.pushes: 2 pushed, 1 skipped as older.
+        await().atMost(WAIT).until(() -> pushes("pushed").count() == pushed + 2);
+        assertThat(pushes("older").count()).isEqualTo(older + 1);
     }
 
     @Test
     void anUnreadableRecordIsSkippedAndTheNextLeaderboardStillArrives() throws Exception {
         BlockingQueue<Map<String, Object>> leaderboards = subscribeAsAda();
+        double unreadable = pushes("unreadable").count();
 
         send(session.id(), "ScoreUpdated", "{\"sessionId\": ");
         send(session.id(), "SomethingElse", json.writeValueAsString(update(session.id(), 5, List.of())));
@@ -149,6 +160,7 @@ class LeaderboardPushTest {
 
         assertThat(version(next(leaderboards))).isEqualTo(1);
         assertThat(leaderboards.poll(QUIET.toMillis(), TimeUnit.MILLISECONDS)).isNull();
+        assertThat(pushes("unreadable").count()).isEqualTo(unreadable + 2); // bad JSON, wrong eventType
     }
 
     /**
@@ -205,6 +217,10 @@ class LeaderboardPushTest {
         ProducerRecord<String, String> record = new ProducerRecord<>(ScoreUpdated.TOPIC, sessionId.toString(), value);
         record.headers().add(EventHeaders.TYPE, type.getBytes(StandardCharsets.UTF_8));
         kafka.send(record).get(10, TimeUnit.SECONDS);
+    }
+
+    private Counter pushes(String result) {
+        return meters.get(ScoreUpdatedListener.PUSHES).tag("result", result).counter();
     }
 
     private static long version(Map<String, Object> leaderboard) {

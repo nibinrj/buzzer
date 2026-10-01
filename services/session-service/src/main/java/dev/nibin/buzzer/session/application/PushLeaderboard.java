@@ -29,25 +29,33 @@ public class PushLeaderboard {
         this.broadcaster = broadcaster;
     }
 
-    /** @return true if it was pushed */
-    public boolean push(ScoreUpdated update) {
+    /** @return what happened to it; the caller counts these (buzzer.leaderboard.pushes) */
+    public Outcome push(ScoreUpdated update) {
         boolean notOlder;
         try {
             notOlder = versions.acceptIfNotOlder(update.sessionId(), update.version());
         } catch (DataAccessException e) {
             log.warn("Leaderboard version {} for session {} not pushed, Redis unavailable ({})", update.version(),
                     update.sessionId(), e.getClass().getSimpleName());
-            return false;
+            return Outcome.REDIS_UNAVAILABLE;
         }
         if (!notOlder) {
             log.debug("Leaderboard version {} for session {} is older than the last pushed one, skipped",
                     update.version(), update.sessionId());
-            return false;
+            return Outcome.OLDER;
         }
         broadcaster.leaderboardChanged(new LeaderboardChanged(update.sessionId(), update.version(),
                 update.top10().stream()
                         .map(entry -> new LeaderboardChanged.Line(entry.rank(), entry.playerId(), entry.points()))
                         .toList()));
-        return true;
+        return Outcome.PUSHED;
+    }
+
+    public enum Outcome {
+        PUSHED,
+        /** A newer leaderboard was already pushed for this session. */
+        OLDER,
+        /** The version check couldn't reach Redis; dropped, not retried. */
+        REDIS_UNAVAILABLE
     }
 }

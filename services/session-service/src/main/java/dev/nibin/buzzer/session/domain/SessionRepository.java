@@ -30,4 +30,7 @@ public interface SessionRepository {
 
     /** Writes the session's new status, inside the caller's transaction (which should hold the row lock). */
     void updateStatus(Session session);
+
+    /** How many sessions are IN_PROGRESS right now, across all instances (the database's view). */
+    long countInProgress();
 }

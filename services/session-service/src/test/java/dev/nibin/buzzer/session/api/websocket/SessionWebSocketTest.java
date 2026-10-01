@@ -6,6 +6,7 @@ import dev.nibin.buzzer.session.TestTokens;
 import dev.nibin.buzzer.session.application.JoinSession;
 import dev.nibin.buzzer.session.application.LogContext;
 import dev.nibin.buzzer.session.application.SubmitAnswer;
+import dev.nibin.buzzer.session.config.OutboxConfig;
 import dev.nibin.buzzer.session.domain.Answer;
 import dev.nibin.buzzer.session.domain.AnswerRepository;
 import dev.nibin.buzzer.session.domain.LiveState;
@@ -15,6 +16,8 @@ import dev.nibin.buzzer.session.domain.RoomCode;
 import dev.nibin.buzzer.session.domain.Session;
 import dev.nibin.buzzer.session.domain.SessionQuestion;
 import dev.nibin.buzzer.session.domain.SessionRepository;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +28,7 @@ import org.springframework.boot.logging.LoggingSystem;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.ApplicationContext;
 import org.springframework.messaging.converter.CompositeMessageConverter;
 import org.springframework.messaging.converter.JacksonJsonMessageConverter;
 import org.springframework.messaging.converter.StringMessageConverter;
@@ -33,6 +37,7 @@ import org.springframework.messaging.simp.stomp.StompHeaders;
 import org.springframework.messaging.simp.stomp.StompSession;
 import org.springframework.messaging.simp.stomp.StompSessionHandlerAdapter;
 import org.springframework.messaging.simp.user.SimpUserRegistry;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
@@ -49,6 +54,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
@@ -58,6 +64,7 @@ import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Real STOMP clients over a real WebSocket against the running app (random port), with real signed tokens.
@@ -98,6 +105,12 @@ class SessionWebSocketTest {
 
     @Autowired
     private LoggingSystem loggingSystem;
+
+    @Autowired
+    private ApplicationContext context;
+
+    @Autowired
+    private MeterRegistry meters;
 
     private final WebSocketStompClient stompClient = stompClient();
     private final List<StompSession> connections = new ArrayList<>();
@@ -168,6 +181,91 @@ class SessionWebSocketTest {
         assertThat(adaQuestions.poll(300, TimeUnit.MILLISECONDS)).isNull();
     }
 
+    // --- metrics (O.4): each meter moves ---
+
+    @Test
+    void answersAreTimedByOutcomeEndToEndAndInTheController() throws Exception {
+        StompSession adaConnection = connect(guestToken(ada));
+        BlockingQueue<Map<String, Object>> acks = subscribe(adaConnection, ACKS);
+        startAndAwaitFirstQuestion(adaConnection);
+        awaitUserQueue(ada, ACKS, 1);
+        Timer ackAccepted = timer(AckLatencyInterceptor.ACK_LATENCY, "ACCEPTED");
+        Timer ackDuplicate = timer(AckLatencyInterceptor.ACK_LATENCY, "DUPLICATE");
+        Timer handledAccepted = timer(AnswerController.HANDLING, "ACCEPTED");
+        long accepted = ackAccepted.count();
+        long duplicates = ackDuplicate.count();
+        long handled = handledAccepted.count();
+
+        adaConnection.send(command("answer"), answer(0, 0));
+        assertThat(next(acks)).containsEntry("accepted", true);
+        adaConnection.send(command("answer"), answer(0, 1));
+        assertThat(next(acks)).containsEntry("reason", "DUPLICATE");
+
+        // Recorded after the ack was handed to the socket, so possibly a moment after the client got it.
+        await().atMost(WAIT).until(() -> ackDuplicate.count() == duplicates + 1);
+        assertThat(ackAccepted.count()).isEqualTo(accepted + 1);
+        assertThat(handledAccepted.count()).isEqualTo(handled + 1);
+        // The whole round trip includes the controller's part, so it can't be shorter.
+        assertThat(ackAccepted.max(TimeUnit.NANOSECONDS)).isGreaterThanOrEqualTo(
+                handledAccepted.max(TimeUnit.NANOSECONDS));
+    }
+
+    @Test
+    void theConnectionsGaugeCountsThisInstancesOpenStompConnections() throws Exception {
+        // Every test disconnects its clients afterwards: wait until those disconnects have been processed.
+        await().atMost(WAIT).until(() -> gauge("buzzer.websocket.connections") == 0);
+
+        StompSession phone = connect(guestToken(ada));
+        connect(guestToken(ada)); // a second tab: a second connection, same user
+        await().atMost(WAIT).until(() -> gauge("buzzer.websocket.connections") == 2);
+
+        phone.disconnect();
+        await().atMost(WAIT).until(() -> gauge("buzzer.websocket.connections") == 1);
+    }
+
+    @Test
+    void theActiveSessionsGaugeFollowsAGameFromStartToEnd() throws Exception {
+        double before = gauge("buzzer.sessions.active");
+        StompSession hostConnection = connect(TestTokens.host(host));
+
+        hostConnection.send(command("start"), "");
+        await().atMost(WAIT).until(() -> gauge("buzzer.sessions.active") == before + 1);
+        hostConnection.send(command("end"), "");
+        await().atMost(WAIT).until(() -> gauge("buzzer.sessions.active") == before);
+    }
+
+    /** The outbox thread is stuck (as while Kafka is down): its backlog and oldest row's age rise, then drain. */
+    @Test
+    void theOutboxGaugesShowABacklogWhileThePublisherIsStuckAndDrainAfterwards() throws Exception {
+        StompSession adaConnection = connect(guestToken(ada));
+        BlockingQueue<Map<String, Object>> acks = subscribe(adaConnection, ACKS);
+        startAndAwaitFirstQuestion(adaConnection);
+        awaitUserQueue(ada, ACKS, 1);
+        ThreadPoolTaskScheduler outbox = context.getBean(OutboxConfig.OUTBOX_SCHEDULER, ThreadPoolTaskScheduler.class);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch blocked = new CountDownLatch(1);
+        outbox.execute(() -> {
+            blocked.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        try {
+            assertThat(blocked.await(WAIT.toMillis(), TimeUnit.MILLISECONDS)).as("outbox thread blocked").isTrue();
+            adaConnection.send(command("answer"), answer(0, 0)); // writes an outbox row nobody can send now
+            assertThat(next(acks)).containsEntry("accepted", true);
+
+            assertThat(gauge("buzzer.outbox.backlog")).isGreaterThanOrEqualTo(1);
+            await().atMost(WAIT).until(() -> gauge("buzzer.outbox.oldest.unsent.age") > 0);
+        } finally {
+            release.countDown();
+        }
+        await().atMost(WAIT).until(() -> gauge("buzzer.outbox.backlog") == 0);
+        assertThat(gauge("buzzer.outbox.oldest.unsent.age")).isZero();
+    }
+
     @Test
     void endIsBroadcastOnTheStatusTopic() throws Exception {
         StompSession hostConnection = connect(TestTokens.host(host));
@@ -186,6 +284,41 @@ class SessionWebSocketTest {
     }
 
     // --- answers and reveal (batch 4.3) ---
+
+    /**
+     * The outbox publisher's only thread is stuck, as it is for up to max.block.ms on every run while Kafka is down.
+     * The game must not notice: answers are handled and acked on STOMP's own threads.
+     * <p>
+     * Red run (2026-10-01, before the fix): no ack within 5 s. Boot had given the STOMP channels the outbox's
+     * scheduler as their executor, so every frame in and out waited behind the publisher.
+     */
+    @Test
+    void anAnswerIsAckedWhileTheOutboxThreadIsBusy() throws Exception {
+        StompSession adaConnection = connect(guestToken(ada));
+        BlockingQueue<Map<String, Object>> acks = subscribe(adaConnection, ACKS);
+        startAndAwaitFirstQuestion(adaConnection);
+        awaitUserQueue(ada, ACKS, 1);
+        ThreadPoolTaskScheduler outbox = context.getBean(OutboxConfig.OUTBOX_SCHEDULER, ThreadPoolTaskScheduler.class);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch blocked = new CountDownLatch(1);
+        outbox.execute(() -> {
+            blocked.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        try {
+            assertThat(blocked.await(WAIT.toMillis(), TimeUnit.MILLISECONDS)).as("outbox thread blocked").isTrue();
+
+            adaConnection.send(command("answer"), answer(0, 0));
+
+            assertThat(next(acks)).containsEntry("accepted", true).containsEntry("seq", 1);
+        } finally {
+            release.countDown();
+        }
+    }
 
     @Test
     void anAnswerIsAckedOnlyOnTheConnectionThatSentItAndRecorded() throws Exception {
@@ -258,7 +391,8 @@ class SessionWebSocketTest {
         assertThat(line.path(LogContext.USER_ID).asString()).isEqualTo(ada.toString());
         assertThat(line.path(LogContext.PLAYER_ID).asString()).isEqualTo(playerIdOf(ada).toString());
         // Not the Tomcat thread the frame arrived on (where preSend runs), yet the MDC is there.
-        assertThat(line.path("process").path("thread").path("name").asString()).doesNotStartWith("http-nio");
+        assertThat(line.path("process").path("thread").path("name").asString())
+                .doesNotStartWith("http-nio").doesNotStartWith("outbox");
         assertThat(output.getAll()).doesNotContain(token);
     }
 
@@ -466,6 +600,14 @@ class SessionWebSocketTest {
 
     private UUID questionId(int index) {
         return session.questions().get(index).questionId();
+    }
+
+    private Timer timer(String name, String outcome) {
+        return meters.get(name).tag("outcome", outcome).timer();
+    }
+
+    private double gauge(String name) {
+        return meters.get(name).gauge().value();
     }
 
     /** The captured JSON log lines (application.yml: ECS on the console); anything else is skipped. */

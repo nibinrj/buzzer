@@ -25,6 +25,12 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- Serves /actuator/prometheus on the management port. Runtime only: no code uses its classes. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
         <!-- STOMP over WebSocket: /ws endpoint, simple in-memory broker, @MessageMapping controllers -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

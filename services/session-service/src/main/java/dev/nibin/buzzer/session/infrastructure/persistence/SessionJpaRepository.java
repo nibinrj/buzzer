@@ -29,4 +29,7 @@ public interface SessionJpaRepository extends JpaRepository<SessionJpaEntity, UU
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("update SessionJpaEntity s set s.status = :status where s.id = :id")
     int updateStatus(@Param("id") UUID id, @Param("status") Session.Status status);
+
+    /** Derived query: SELECT count(*) ... WHERE status = ?. V4's partial index serves IN_PROGRESS. */
+    long countByStatus(Session.Status status);
 }

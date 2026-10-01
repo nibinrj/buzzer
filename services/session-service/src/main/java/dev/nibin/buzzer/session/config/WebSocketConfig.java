@@ -1,5 +1,7 @@
 package dev.nibin.buzzer.session.config;
 
+import dev.nibin.buzzer.session.api.websocket.AckLatencyInterceptor;
+import dev.nibin.buzzer.session.api.websocket.AnswerReceivedInterceptor;
 import dev.nibin.buzzer.session.api.websocket.DestinationAuthorizationInterceptor;
 import dev.nibin.buzzer.session.api.websocket.JwtConnectInterceptor;
 import dev.nibin.buzzer.session.api.websocket.StompLogContextInterceptor;
@@ -36,6 +38,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private final JwtConnectInterceptor jwtConnectInterceptor;
     private final DestinationAuthorizationInterceptor destinationAuthorization;
     private final StompLogContextInterceptor logContext;
+    private final AnswerReceivedInterceptor answerReceived;
+    private final AckLatencyInterceptor ackLatency;
     private final TaskScheduler messageBrokerTaskScheduler;
 
     /**
@@ -45,22 +49,37 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
      */
     public WebSocketConfig(WebSocketProperties properties, JwtConnectInterceptor jwtConnectInterceptor,
             DestinationAuthorizationInterceptor destinationAuthorization, StompLogContextInterceptor logContext,
+            AnswerReceivedInterceptor answerReceived, AckLatencyInterceptor ackLatency,
             @Lazy @Qualifier("messageBrokerTaskScheduler") TaskScheduler messageBrokerTaskScheduler) {
         this.properties = properties;
         this.jwtConnectInterceptor = jwtConnectInterceptor;
         this.destinationAuthorization = destinationAuthorization;
         this.logContext = logContext;
+        this.answerReceived = answerReceived;
+        this.ackLatency = ackLatency;
         this.messageBrokerTaskScheduler = messageBrokerTaskScheduler;
     }
 
+    /**
+     * No setPreserveReceiveOrder(true), on purpose: it hands each frame to the inbound channel from another thread, so
+     * an interceptor's refusal no longer reaches StompSubProtocolHandler, and the client gets no ERROR frame (the
+     * refusal tests in SessionWebSocketTest go silent). One client's frames may therefore be handled in parallel;
+     * the game doesn't depend on their order (commands check state in Postgres and Redis, answers are ordered by Redis).
+     */
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         registry.addEndpoint("/ws")
                 .setAllowedOriginPatterns(properties.allowedOriginPatterns().toArray(String[]::new));
     }
 
+    /**
+     * preservePublishOrder: the outbound channel runs on a thread pool, so two messages to one client could otherwise
+     * be written in either order. With it, each connection gets its messages in the order they were sent (a question
+     * before its reveal), while different connections are still written in parallel.
+     */
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
+        registry.setPreservePublishOrder(true);
         registry.setApplicationDestinationPrefixes("/app");
         registry.enableSimpleBroker("/topic", "/queue")
                 .setHeartbeatValue(new long[] {HEARTBEAT_MILLIS, HEARTBEAT_MILLIS})
@@ -68,11 +87,18 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     }
 
     /**
-     * Order matters: authenticate on CONNECT first, then check destinations of every later frame. logContext acts
-     * later, on the thread that handles the frame (beforeHandle), so it sees the user the first one set.
+     * Order matters: stamp an answer's arrival before anything else runs, authenticate on CONNECT, then check
+     * destinations of every later frame. logContext acts later, on the thread that handles the frame (beforeHandle),
+     * so it sees the user the first one set.
      */
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(jwtConnectInterceptor, destinationAuthorization, logContext);
+        registration.interceptors(answerReceived, jwtConnectInterceptor, destinationAuthorization, logContext);
+    }
+
+    /** ackLatency stops the answer's clock once its ack has been handed to the WebSocket. */
+    @Override
+    public void configureClientOutboundChannel(ChannelRegistration registration) {
+        registration.interceptors(ackLatency);
     }
 }

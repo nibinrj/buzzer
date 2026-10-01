@@ -33,7 +33,7 @@ class PushLeaderboardTest {
     void aLeaderboardThatIsNotOlderIsBroadcastAsItCame() {
         when(versions.acceptIfNotOlder(session, 7)).thenReturn(true);
 
-        assertThat(push.push(update)).isTrue();
+        assertThat(push.push(update)).isEqualTo(PushLeaderboard.Outcome.PUSHED);
 
         verify(broadcaster).leaderboardChanged(new LeaderboardChanged(session, 7, List.of(
                 new LeaderboardChanged.Line(1, ada, 1000), new LeaderboardChanged.Line(2, bob, 900))));
@@ -43,7 +43,7 @@ class PushLeaderboardTest {
     void anOlderLeaderboardIsNotBroadcast() {
         when(versions.acceptIfNotOlder(session, 7)).thenReturn(false);
 
-        assertThat(push.push(update)).isFalse();
+        assertThat(push.push(update)).isEqualTo(PushLeaderboard.Outcome.OLDER);
 
         verify(broadcaster, never()).leaderboardChanged(any());
     }
@@ -52,7 +52,8 @@ class PushLeaderboardTest {
     void withRedisDownNothingIsBroadcastAndNothingIsThrown() {
         when(versions.acceptIfNotOlder(session, 7)).thenThrow(new RedisConnectionFailureException("Redis is down"));
 
-        assertThat(push.push(update)).isFalse(); // dropped, not retried: the next leaderboard replaces it
+        // Dropped, not retried: the next leaderboard replaces it.
+        assertThat(push.push(update)).isEqualTo(PushLeaderboard.Outcome.REDIS_UNAVAILABLE);
 
         verify(broadcaster, never()).leaderboardChanged(any());
     }

@@ -29,8 +29,14 @@ public class OutboxConfig {
      * @EnableWebSocketMessageBroker already defines one (messageBrokerTaskScheduler, the STOMP broker's), and without
      * a qualifier @Scheduled would run on that. A publisher run can take seconds while Kafka is down; it must not
      * hold a thread the WebSocket side needs. Started and shut down with the context (the bean is a lifecycle bean).
+     * <p>
+     * defaultCandidate = false: nothing gets this bean by type, only by its name (@Scheduled's scheduler = ...).
+     * Without it, Boot's WebSocket auto-configuration found it as the context's only AsyncTaskExecutor and ran both
+     * STOMP channels on this one thread: every answer, ack and broadcast queued behind the publisher, and the game
+     * froze whenever Kafka was down. Excluded, Boot finds no executor to hand out, and the channels keep Spring's own
+     * (clientInboundChannelExecutor, clientOutboundChannelExecutor: pools of their own). StompExecutorTest checks it.
      */
-    @Bean(OUTBOX_SCHEDULER)
+    @Bean(name = OUTBOX_SCHEDULER, defaultCandidate = false)
     ThreadPoolTaskScheduler outboxTaskScheduler() {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(1);

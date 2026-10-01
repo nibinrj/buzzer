@@ -6,6 +6,7 @@ import dev.nibin.buzzer.session.application.SessionBroadcaster.QuestionShown;
 import dev.nibin.buzzer.session.application.SessionBroadcaster.StatusChanged;
 import dev.nibin.buzzer.session.domain.Session;
 import dev.nibin.buzzer.session.infrastructure.websocket.LocalStompDelivery;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.RedisConnectionFailureException;
@@ -40,7 +41,8 @@ class RedisRelayTest {
     private final StringRedisTemplate redis = mock(StringRedisTemplate.class);
     private final LocalStompDelivery delivery = mock(LocalStompDelivery.class);
 
-    private final RedisRelayBroadcaster broadcaster = new RedisRelayBroadcaster(redis, json);
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
+    private final RedisRelayBroadcaster broadcaster = new RedisRelayBroadcaster(redis, json, meters);
     private final RedisRelayListener listener = new RedisRelayListener(delivery, json);
 
     @Test
@@ -101,11 +103,12 @@ class RedisRelayTest {
     }
 
     @Test
-    void aFailedPublishIsLoggedNotThrownBecauseTheChangeIsAlreadyCommitted() {
+    void aFailedPublishIsLoggedAndCountedNotThrownBecauseTheChangeIsAlreadyCommitted() {
         when(redis.convertAndSend(any(), any())).thenThrow(new RedisConnectionFailureException("Redis is down"));
 
         assertThatCode(() -> broadcaster.statusChanged(new StatusChanged(UUID.randomUUID(), Session.Status.ENDED)))
                 .doesNotThrowAnyException();
+        assertThat(meters.get(RedisRelayBroadcaster.PUBLISH_FAILURES).counter().count()).isEqualTo(1);
     }
 
     /** The JSON the broadcaster PUBLISHed on the relay channel. */

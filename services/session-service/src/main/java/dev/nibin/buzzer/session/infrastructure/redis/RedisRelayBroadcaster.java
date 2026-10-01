@@ -1,6 +1,8 @@
 package dev.nibin.buzzer.session.infrastructure.redis;
 
 import dev.nibin.buzzer.session.application.SessionBroadcaster;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -25,14 +27,21 @@ import java.util.UUID;
 @Component
 class RedisRelayBroadcaster implements SessionBroadcaster {
 
+    /** Failed PUBLISHes. Clients of every instance missed that broadcast and catch up only by reloading /state. */
+    static final String PUBLISH_FAILURES = "buzzer.relay.publish.failures";
+
     private static final Logger log = LoggerFactory.getLogger(RedisRelayBroadcaster.class);
 
     private final StringRedisTemplate redis;
     private final JsonMapper json;
+    private final Counter publishFailures;
 
-    RedisRelayBroadcaster(StringRedisTemplate redis, JsonMapper json) {
+    RedisRelayBroadcaster(StringRedisTemplate redis, JsonMapper json, MeterRegistry meters) {
         this.redis = redis;
         this.json = json;
+        this.publishFailures = Counter.builder(PUBLISH_FAILURES)
+                .description("Broadcasts not published on the Redis relay: no instance delivered them")
+                .register(meters);
     }
 
     @Override
@@ -59,6 +68,7 @@ class RedisRelayBroadcaster implements SessionBroadcaster {
         try {
             redis.convertAndSend(RedisRelayListener.CHANNEL, json.writeValueAsString(message));
         } catch (DataAccessException e) {
+            publishFailures.increment();
             // The command already succeeded; failing it now would only make the host retry a committed change.
             log.warn("Broadcast for session {} not published; clients catch up via /state: {}", sessionId,
                     e.getMessage());
