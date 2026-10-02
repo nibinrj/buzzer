@@ -40,18 +40,23 @@ public class OutboxJpaEntity {
     @Column(name = "sent_at")
     private Instant sentAt;
 
+    /** W3C traceparent of the trace the event was written in (V5); null outside any trace. */
+    @Column(name = "traceparent", updatable = false, length = 55)
+    private String traceparent;
+
     /** Required by JPA. */
     protected OutboxJpaEntity() {
     }
 
     OutboxJpaEntity(UUID eventId, String topic, String messageKey, String eventType, String payload,
-            Instant createdAt) {
+            Instant createdAt, String traceparent) {
         this.eventId = eventId;
         this.topic = topic;
         this.messageKey = messageKey;
         this.eventType = eventType;
         this.payload = payload;
         this.createdAt = createdAt;
+        this.traceparent = traceparent;
     }
 
     /** The broker acknowledged it. Written back when the publisher's transaction commits (dirty checking). */
@@ -77,6 +82,10 @@ public class OutboxJpaEntity {
 
     String getEventType() {
         return eventType;
+    }
+
+    String getTraceparent() {
+        return traceparent;
     }
 
     String getPayload() {

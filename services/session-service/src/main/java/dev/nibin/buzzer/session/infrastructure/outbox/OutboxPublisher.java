@@ -3,6 +3,9 @@ package dev.nibin.buzzer.session.infrastructure.outbox;
 import dev.nibin.buzzer.events.EventHeaders;
 import dev.nibin.buzzer.session.config.OutboxConfig;
 import dev.nibin.buzzer.session.config.OutboxProperties;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.observation.transport.ReceiverContext;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -41,6 +45,9 @@ import java.util.concurrent.TimeoutException;
 @Component
 class OutboxPublisher {
 
+    /** One span (and timer) per row sent, carrying the trace the row was written in. */
+    static final String PUBLISH = "buzzer.outbox.publish";
+
     private static final Logger log = LoggerFactory.getLogger(OutboxPublisher.class);
 
     private final OutboxJpaRepository repository;
@@ -48,14 +55,17 @@ class OutboxPublisher {
     private final TransactionOperations transaction;
     private final OutboxProperties properties;
     private final Clock clock;
+    private final ObservationRegistry observations;
 
     OutboxPublisher(OutboxJpaRepository repository, KafkaTemplate<String, String> kafka,
-            TransactionOperations transaction, OutboxProperties properties, Clock clock) {
+            TransactionOperations transaction, OutboxProperties properties, Clock clock,
+            ObservationRegistry observations) {
         this.repository = repository;
         this.kafka = kafka;
         this.transaction = transaction;
         this.properties = properties;
         this.clock = clock;
+        this.observations = observations;
     }
 
     /**
@@ -99,16 +109,33 @@ class OutboxPublisher {
         return sends;
     }
 
+    /**
+     * Sent inside an observation whose parent is the trace stored with the row (V5), so KafkaTemplate's own span
+     * becomes its child and writes THAT trace into the record's traceparent header. Without it, this scheduler thread
+     * has no trace, and every event would start a new one, cut off from the answer that caused it.
+     * <p>
+     * A ReceiverContext, because the parent arrives as a carrier to extract, just like a message received from
+     * Kafka: the row is the "message" this publisher picks up later. Its span kind is therefore CONSUMER.
+     */
     private CompletableFuture<SendResult<String, String>> send(OutboxJpaEntity row) {
         ProducerRecord<String, String> record =
                 new ProducerRecord<>(row.getTopic(), row.getMessageKey(), row.getPayload());
         record.headers().add(EventHeaders.TYPE, row.getEventType().getBytes(StandardCharsets.UTF_8));
-        try {
-            return kafka.send(record);
-        } catch (RuntimeException e) {
-            // Some failures are thrown instead of failing the future; treat them the same way.
-            return CompletableFuture.failedFuture(e);
-        }
+        ReceiverContext<Map<String, String>> context = new ReceiverContext<>(Map::get);
+        context.setCarrier(row.getTraceparent() == null
+                ? Map.of() : Map.of(JpaEventOutbox.TRACEPARENT, row.getTraceparent()));
+        return Observation.createNotStarted(PUBLISH, () -> context, observations)
+                .contextualName("outbox publish")
+                .lowCardinalityKeyValue("topic", row.getTopic())
+                .lowCardinalityKeyValue("event.type", row.getEventType())
+                .observe(() -> {
+                    try {
+                        return kafka.send(record);
+                    } catch (RuntimeException e) {
+                        // Some failures are thrown instead of failing the future; treat them the same way.
+                        return CompletableFuture.failedFuture(e);
+                    }
+                });
     }
 
     /** Waits at most until the run's deadline: send-timeout bounds the whole run, not each row. */

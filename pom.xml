@@ -62,8 +62,11 @@
                         <argLine>-Duser.timezone=UTC</argLine>
                         <!-- Actuator on a random port in tests: each service fixes its own (9080-9084) in
                              application.yml, and several test contexts run at once in one JVM. -->
+                        <!-- Finished spans are exported in batches every schedule-delay (default seconds): short in
+                             tests, so the tracing tests don't wait for them. -->
                         <systemPropertyVariables>
                             <management.server.port>0</management.server.port>
+                            <management.opentelemetry.tracing.export.schedule-delay>100ms</management.opentelemetry.tracing.export.schedule-delay>
                         </systemPropertyVariables>
                     </configuration>
                 </plugin>

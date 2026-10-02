@@ -35,6 +35,18 @@ management:
     web:
       exposure:
         include: health,info,prometheus
+  tracing:
+    sampling:
+      # Keep every trace locally. Lower it per environment (MANAGEMENT_TRACING_SAMPLING_PROBABILITY): the root of a
+      # trace decides, and every service downstream follows that decision (parent-based sampling).
+      probability: 1.0
+  # Traces leave over OTLP only when MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT is set (see .env.example);
+  # without it Boot creates no exporter at all.
+  otlp:
+    metrics:
+      export:
+        # The OpenTelemetry starter would also PUSH every meter over OTLP. Prometheus pulls them instead.
+        enabled: false
   metrics:
     tags:
       # On every meter. Not "instance": Prometheus adds instance (host:port) and job itself when it scrapes.

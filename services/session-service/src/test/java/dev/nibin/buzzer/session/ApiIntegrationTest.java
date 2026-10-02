@@ -15,7 +15,8 @@ import java.lang.annotation.Target;
  * quiz-service) on a random port. REST tests drive it through MockMvc and authenticate with spring-security-test's
  * jwt() post-processor; WebSocket tests connect to the real port with real signed tokens (TestTokens).
  * Every class using exactly this annotation shares ONE cached context, and so one database, one Redis, one broker,
- * one WireMock and one circuit breaker: tests must reset what they use.
+ * one WireMock and one circuit breaker: tests must reset what they use. CapturedSpans collects the spans the app
+ * finishes, for the tracing tests.
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
@@ -23,6 +24,6 @@ import java.lang.annotation.Target;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureMockMvc
 @Import({TestcontainersConfiguration.class, RedisTestcontainer.class, RedpandaTestcontainer.class,
-        QuizServiceStub.class})
+        QuizServiceStub.class, CapturedSpans.class})
 public @interface ApiIntegrationTest {
 }

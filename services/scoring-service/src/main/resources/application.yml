@@ -28,6 +28,11 @@ spring:
     listener:
       # ack.acknowledge() commits the offset right away, on the consumer thread.
       ack-mode: manual_immediate
+      # A span per record, continuing the trace in its traceparent header (written by session-service's publisher).
+      observation-enabled: true
+    template:
+      # ScoreUpdated (and retry/DLT forwards) carry the current trace in a traceparent header.
+      observation-enabled: true
     producer:
       # Publishes ScoreUpdated, and forwards failed records to the retry topics and the DLT.
       # acks=all: acknowledged only once every in-sync replica has the record.
@@ -67,6 +72,18 @@ management:
     web:
       exposure:
         include: health,info,prometheus
+  tracing:
+    sampling:
+      # Keep every trace locally. Lower it per environment (MANAGEMENT_TRACING_SAMPLING_PROBABILITY): the root of a
+      # trace decides, and every service downstream follows that decision (parent-based sampling).
+      probability: 1.0
+  # Traces leave over OTLP only when MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT is set (see .env.example);
+  # without it Boot creates no exporter at all.
+  otlp:
+    metrics:
+      export:
+        # The OpenTelemetry starter would also PUSH every meter over OTLP. Prometheus pulls them instead.
+        enabled: false
   metrics:
     tags:
       # On every meter. Not "instance": Prometheus adds instance (host:port) and job itself when it scrapes.
@@ -76,6 +93,9 @@ management:
       # so Prometheus can compute p95/p99 for the whole service. 10 buckets, 5 ms to 5 s.
       slo:
         http.server.requests: 5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s,2500ms,5s
+        # Answer accepted to score committed. Normally the outbox poll (300 ms) plus a Kafka hop; retries add 1 s and
+        # 2 s; an outage, minutes. Hence a much wider range than request timings.
+        buzzer.scoring.delay: 100ms,250ms,500ms,1s,2500ms,5s,10s,30s,60s,300s
 
 server:
   port: 8084

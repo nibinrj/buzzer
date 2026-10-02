@@ -27,6 +27,13 @@ spring:
       # An existing group continues from its committed offset either way.
       auto-offset-reset: latest
       # Keys and values are Strings (Boot's default deserializers): ScoreUpdatedListener parses the JSON itself.
+    listener:
+      # A span per ScoreUpdated, continuing scoring-service's trace from the record's traceparent header.
+      observation-enabled: true
+    template:
+      # The outbox publisher's sends write the current trace into a traceparent header (OutboxPublisher makes the
+      # answer's trace current first).
+      observation-enabled: true
     producer:
       # Keys and values are Strings (Boot's default serializers): the outbox already holds the JSON.
       # acks=all: acknowledged only once every in-sync replica has the record. Only then is a row marked sent.
@@ -89,6 +96,18 @@ management:
     web:
       exposure:
         include: health,info,prometheus
+  tracing:
+    sampling:
+      # Keep every trace locally. Lower it per environment (MANAGEMENT_TRACING_SAMPLING_PROBABILITY): the root of a
+      # trace decides, and every service downstream follows that decision (parent-based sampling).
+      probability: 1.0
+  # Traces leave over OTLP only when MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT is set (see .env.example);
+  # without it Boot creates no exporter at all.
+  otlp:
+    metrics:
+      export:
+        # The OpenTelemetry starter would also PUSH every meter over OTLP. Prometheus pulls them instead.
+        enabled: false
   metrics:
     tags:
       # On every meter. Not "instance": Prometheus adds instance (host:port) and job itself when it scrapes.

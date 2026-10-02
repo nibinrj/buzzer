@@ -1,7 +1,9 @@
 package dev.nibin.buzzer.session.api.websocket;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import dev.nibin.buzzer.events.AnswerSubmitted;
 import dev.nibin.buzzer.session.ApiIntegrationTest;
+import dev.nibin.buzzer.session.CapturedSpans;
 import dev.nibin.buzzer.session.TestTokens;
 import dev.nibin.buzzer.session.application.JoinSession;
 import dev.nibin.buzzer.session.application.LogContext;
@@ -18,6 +20,14 @@ import dev.nibin.buzzer.session.domain.SessionQuestion;
 import dev.nibin.buzzer.session.domain.SessionRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.header.Header;
+import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,6 +39,8 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.ApplicationContext;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.messaging.converter.CompositeMessageConverter;
 import org.springframework.messaging.converter.JacksonJsonMessageConverter;
 import org.springframework.messaging.converter.StringMessageConverter;
@@ -45,6 +57,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.lang.reflect.Type;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
@@ -111,6 +124,15 @@ class SessionWebSocketTest {
 
     @Autowired
     private MeterRegistry meters;
+
+    @Autowired
+    private CapturedSpans spans;
+
+    @Autowired
+    private JdbcClient jdbc;
+
+    @Autowired
+    private KafkaAdmin kafkaAdmin;
 
     private final WebSocketStompClient stompClient = stompClient();
     private final List<StompSession> connections = new ArrayList<>();
@@ -179,6 +201,41 @@ class SessionWebSocketTest {
         assertThat(next(hostErrors)).containsEntry("title", "Not possible now")
                 .containsEntry("detail", "That was the last question. End the session.");
         assertThat(adaQuestions.poll(300, TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    // --- tracing (O.6) ---
+
+    /**
+     * One answer, one trace: the STOMP command opens it (no parent: browsers aren't traced), the outbox row stores
+     * it, the publisher restores it on its own thread, and the Kafka record carries it on to scoring-service.
+     */
+    @Test
+    void anAnswersTraceRunsFromTheStompCommandThroughTheOutboxIntoTheKafkaRecord() throws Exception {
+        StompSession adaConnection = connect(guestToken(ada));
+        BlockingQueue<Map<String, Object>> acks = subscribe(adaConnection, ACKS);
+        startAndAwaitFirstQuestion(adaConnection);
+        awaitUserQueue(ada, ACKS, 1);
+
+        adaConnection.send(command("answer"), answer(0, 0));
+        assertThat(next(acks)).containsEntry("accepted", true);
+
+        UUID answerId = answers.find(session.id(), questionId(0), playerIdOf(ada)).orElseThrow().answerId();
+        String stored = jdbc.sql("SELECT traceparent FROM outbox WHERE event_id = ?").param(answerId)
+                .query(String.class).single();
+        // W3C: version-traceId-parentSpanId-flags. Flags 03 here: bit 1 = sampled, bit 2 = "the trace id is random"
+        // (Trace Context Level 2, set by OpenTelemetry Java). The publisher must keep the sampled bit.
+        assertThat(stored).matches("00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}");
+        assertThat(Integer.parseInt(stored.split("-")[3], 16) & 1).as("sampled").isEqualTo(1);
+        String traceId = stored.split("-")[1];
+
+        assertThat(traceparentOnKafka(answerId).split("-")[1]).isEqualTo(traceId);
+        await().atMost(WAIT).untilAsserted(() -> assertThat(spans.ofTrace(traceId)).extracting(SpanData::getName)
+                .contains("STOMP /app/sessions/{sessionId}/answer", "outbox publish"));
+        SpanData command = spans.ofTrace(traceId).stream()
+                .filter(span -> span.getName().startsWith("STOMP")).findFirst().orElseThrow();
+        assertThat(command.getParentSpanContext().isValid()).as("the command starts the trace").isFalse();
+        assertThat(spans.ofTrace(traceId)).as("KafkaTemplate's send, inside the restored trace")
+                .anyMatch(span -> span.getKind() == SpanKind.PRODUCER);
     }
 
     // --- metrics (O.4): each meter moves ---
@@ -390,6 +447,9 @@ class SessionWebSocketTest {
                 .findFirst().orElseThrow();
         assertThat(line.path(LogContext.USER_ID).asString()).isEqualTo(ada.toString());
         assertThat(line.path(LogContext.PLAYER_ID).asString()).isEqualTo(playerIdOf(ada).toString());
+        // Tracing (O.6) puts the STOMP command's trace into MDC too: from a log line straight to its trace.
+        assertThat(line.path("traceId").asString()).matches("[0-9a-f]{32}");
+        assertThat(line.path("spanId").asString()).matches("[0-9a-f]{16}");
         // Not the Tomcat thread the frame arrived on (where preSend runs), yet the MDC is there.
         assertThat(line.path("process").path("thread").path("name").asString())
                 .doesNotStartWith("http-nio").doesNotStartWith("outbox");
@@ -600,6 +660,31 @@ class SessionWebSocketTest {
 
     private UUID questionId(int index) {
         return session.questions().get(index).questionId();
+    }
+
+    /** The traceparent header of the AnswerSubmitted record for this event, read back from the topic. */
+    private String traceparentOnKafka(UUID eventId) {
+        Map<String, Object> config = Map.of(
+                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
+                kafkaAdmin.getConfigurationProperties().get(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG),
+                ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+        try (KafkaConsumer<String, String> consumer =
+                new KafkaConsumer<>(config, new StringDeserializer(), new StringDeserializer())) {
+            List<TopicPartition> partitions = consumer.partitionsFor(AnswerSubmitted.TOPIC).stream()
+                    .map(info -> new TopicPartition(AnswerSubmitted.TOPIC, info.partition())).toList();
+            consumer.assign(partitions);
+            consumer.seekToBeginning(partitions);
+            long deadline = System.nanoTime() + WAIT.toNanos();
+            while (System.nanoTime() < deadline) {
+                for (ConsumerRecord<String, String> record : consumer.poll(Duration.ofMillis(200))) {
+                    Header traceparent = record.headers().lastHeader("traceparent");
+                    if (record.value().contains(eventId.toString()) && traceparent != null) {
+                        return new String(traceparent.value(), StandardCharsets.UTF_8);
+                    }
+                }
+            }
+        }
+        return fail("No AnswerSubmitted with a traceparent for " + eventId);
     }
 
     private Timer timer(String name, String outcome) {

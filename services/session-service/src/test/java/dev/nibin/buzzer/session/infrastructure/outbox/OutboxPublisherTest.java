@@ -5,6 +5,7 @@ import dev.nibin.buzzer.session.config.OutboxProperties;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
+import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -121,7 +122,7 @@ class OutboxPublisherTest {
     private List<OutboxJpaEntity> rows(int count) {
         List<OutboxJpaEntity> rows = IntStream.range(0, count)
                 .mapToObj(i -> new OutboxJpaEntity(UUID.randomUUID(), AnswerSubmitted.TOPIC,
-                        UUID.randomUUID().toString(), "AnswerSubmitted", "{}", NOW))
+                        UUID.randomUUID().toString(), "AnswerSubmitted", "{}", NOW, null))
                 .toList();
         when(repository.lockOldestUnsent(anyInt()))
                 .thenAnswer(invocation -> rows.stream().filter(row -> row.getSentAt() == null).toList());
@@ -130,7 +131,8 @@ class OutboxPublisherTest {
 
     private OutboxPublisher publisher(KafkaTemplate<String, String> kafka, Duration sendTimeout) {
         return new OutboxPublisher(repository, kafka, TransactionOperations.withoutTransaction(),
-                new OutboxProperties(300, 100, sendTimeout, 3, (short) 1), Clock.fixed(NOW, ZoneOffset.UTC));
+                new OutboxProperties(300, 100, sendTimeout, 3, (short) 1), Clock.fixed(NOW, ZoneOffset.UTC),
+                ObservationRegistry.NOOP);
     }
 
     @SuppressWarnings("unchecked")

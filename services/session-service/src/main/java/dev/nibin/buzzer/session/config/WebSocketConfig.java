@@ -5,6 +5,7 @@ import dev.nibin.buzzer.session.api.websocket.AnswerReceivedInterceptor;
 import dev.nibin.buzzer.session.api.websocket.DestinationAuthorizationInterceptor;
 import dev.nibin.buzzer.session.api.websocket.JwtConnectInterceptor;
 import dev.nibin.buzzer.session.api.websocket.StompLogContextInterceptor;
+import dev.nibin.buzzer.session.api.websocket.StompObservationInterceptor;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
@@ -38,6 +39,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private final JwtConnectInterceptor jwtConnectInterceptor;
     private final DestinationAuthorizationInterceptor destinationAuthorization;
     private final StompLogContextInterceptor logContext;
+    private final StompObservationInterceptor observation;
     private final AnswerReceivedInterceptor answerReceived;
     private final AckLatencyInterceptor ackLatency;
     private final TaskScheduler messageBrokerTaskScheduler;
@@ -49,12 +51,14 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
      */
     public WebSocketConfig(WebSocketProperties properties, JwtConnectInterceptor jwtConnectInterceptor,
             DestinationAuthorizationInterceptor destinationAuthorization, StompLogContextInterceptor logContext,
+            StompObservationInterceptor observation,
             AnswerReceivedInterceptor answerReceived, AckLatencyInterceptor ackLatency,
             @Lazy @Qualifier("messageBrokerTaskScheduler") TaskScheduler messageBrokerTaskScheduler) {
         this.properties = properties;
         this.jwtConnectInterceptor = jwtConnectInterceptor;
         this.destinationAuthorization = destinationAuthorization;
         this.logContext = logContext;
+        this.observation = observation;
         this.answerReceived = answerReceived;
         this.ackLatency = ackLatency;
         this.messageBrokerTaskScheduler = messageBrokerTaskScheduler;
@@ -88,12 +92,14 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     /**
      * Order matters: stamp an answer's arrival before anything else runs, authenticate on CONNECT, then check
-     * destinations of every later frame. logContext acts later, on the thread that handles the frame (beforeHandle),
-     * so it sees the user the first one set.
+     * destinations of every later frame. observation and logContext act later, on the thread that handles the frame
+     * (beforeHandle), so they see the user the first ones set; observation first, so the MDC already has the traceId
+     * when logContext adds the session.
      */
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(answerReceived, jwtConnectInterceptor, destinationAuthorization, logContext);
+        registration.interceptors(answerReceived, jwtConnectInterceptor, destinationAuthorization, observation,
+                logContext);
     }
 
     /** ackLatency stops the answer's clock once its ack has been handed to the WebSocket. */
