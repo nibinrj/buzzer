@@ -7,15 +7,10 @@ groups:
       # A record in a DLT is a score (or a lifecycle change) that is MISSING until a human drains it (ADR-005).
       # increase() over a window rather than "total > 0": the counter restarts at 0 with the service, and a counter
       # that only ever grows would keep the alert firing forever after the first record.
-      # The second half: this counter only comes into existence with the FIRST dead-lettered record (it isn't
-      # registered at 0 in advance), so its first sample is already 1 and increase() sees no increase. "Exists now
-      # but did not 15 minutes ago" catches that first one.
+      # increase() needs an earlier sample to see the first record: ScoringEventListener registers the counter at 0
+      # for both DLT topics at startup, so the series exists before any record arrives.
       - alert: BuzzerScoringDeadLetter
-        expr: |
-          sum by (topic) (increase(buzzer_scoring_events_dead_lettered_total[15m])) > 0
-          or
-          sum by (topic) (buzzer_scoring_events_dead_lettered_total
-                          unless buzzer_scoring_events_dead_lettered_total offset 15m) > 0
+        expr: sum by (topic) (increase(buzzer_scoring_events_dead_lettered_total[15m])) > 0
         labels:
           severity: page
         annotations:

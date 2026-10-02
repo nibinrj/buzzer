@@ -57,6 +57,8 @@ public class ScoringEventListener {
 
     /** Records that reached a DLT: each one is a score or a lifecycle change that is missing until a human acts. */
     public static final String DEAD_LETTERED = "buzzer.scoring.events.dead.lettered";
+    /** Spring Kafka's default suffix for the dead-letter topic of a @RetryableTopic (asserted in the tests). */
+    static final String DLT_SUFFIX = "-dlt";
     /** Every event read, by type and whether it was applied or already had been (a redelivery). */
     public static final String EVENTS = "buzzer.scoring.events";
     /** From the answer's acceptance (answeredAtMs) to its score being committed here. New answers only. */
@@ -105,6 +107,19 @@ public class ScoringEventListener {
         }
         this.scoringDelay = Timer.builder(DELAY)
                 .description("Answer accepted (session-service, Redis clock) to score committed (here)")
+                .register(meters);
+        // The DLT counters too. Created on the first dead-lettered record instead, a series would appear already at
+        // 1, and increase() (the BuzzerScoringDeadLetter alert) needs an earlier sample to see that first record.
+        for (String topic : List.of(AnswerSubmitted.TOPIC, SessionLifecycle.TOPIC)) {
+            deadLetterCounter(topic + DLT_SUFFIX);
+        }
+    }
+
+    /** Registers on first call, returns the same counter after: Micrometer keeps one meter per name and tags. */
+    private Counter deadLetterCounter(String dltTopic) {
+        return Counter.builder(DEAD_LETTERED)
+                .description("Records that reached a DLT and are not applied")
+                .tag("topic", dltTopic)
                 .register(meters);
     }
 
@@ -190,11 +205,7 @@ public class ScoringEventListener {
     }
 
     private void deadLettered(ConsumerRecord<String, String> record, Acknowledgment ack) {
-        Counter.builder(DEAD_LETTERED)
-                .description("Records that reached a DLT and are not applied")
-                .tag("topic", record.topic())
-                .register(meters)
-                .increment();
+        deadLetterCounter(record.topic()).increment();
         // The retry-topic path writes the plain kafka_original-* / kafka_exception-* headers, not the kafka_dlt-* ones
         // a stand-alone DeadLetterPublishingRecoverer would. The message and stack trace headers are left out on
         // purpose: an exception message can quote data.

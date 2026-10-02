@@ -95,7 +95,7 @@ flowchart LR
   - STOMP channels ran on the outbox's single thread, so a Kafka outage would have frozen the game (fixed with `defaultCandidate = false`).
   - The gateway logged tokens at DEBUG.
   - A rebuild counter that would have counted every new game.
-  - A DLT alert that would have missed the first record.
+  - A DLT counter created only on the first record, which the alert would have missed (fixed: registered at startup).
 
 **Negative, accepted on purpose**
 - **More moving parts locally:** three more containers, and two required `.env` entries without which compose refuses to run.
@@ -107,7 +107,6 @@ flowchart LR
   - **Scoring delay subtracts two clocks** (Redis, JVM).
   - **Per-partition consumer lag appears up to 60 s after a consumer starts** (Micrometer's Kafka binder refresh).
   - **Broker lag can't see a partition a group has never committed on.**
-- **The DLT counter isn't registered up front.** The alert expression compensates; the proper fix is one line in `ScoringEventListener`.
 - **Grafana keeps nothing between restarts:** dashboards are edited as JSON, not saved in the UI.
 - **Jaeger is pinned behind the newest release,** and alerts notify nobody locally (no Alertmanager).
 
@@ -120,6 +119,7 @@ flowchart LR
 | A STOMP answer's log line carries session, user, player, trace and span ids | `SessionWebSocketTest.anAnswersLogLineCarriesSessionUserAndPlayerAndTheTokenIsNeverLogged` |
 | Metrics only on the management port; fixed buckets; `application` tag; no ids in labels | `MetricsEndpointTest` (5 services) |
 | Each domain meter moves | `SessionWebSocketTest` (timers, sockets, games, outbox gauges), `LeaderboardPushTest`, `RedisRelayTest`, `ScoringEventListenerTest`, `LeaderboardFlowTest` |
+| The DLT counters exist at 0 before any record, so the alert sees the first one | `ScoringEventListenerTest.bothDltCountersExistBeforeAnyRecordIsDeadLettered` (red with the registration removed) |
 | STOMP no longer shares the outbox's thread | `SessionWebSocketTest.anAnswerIsAckedWhileTheOutboxThreadIsBusy` (red before the fix), `StompExecutorTest` |
 | One answer is one trace: STOMP root, outbox row, outbox publish, Kafka record | `SessionWebSocketTest.anAnswersTraceRunsFromTheStompCommandThroughTheOutboxIntoTheKafkaRecord` |
 | scoring-service continues the trace and passes it on in ScoreUpdated | scoring `TracingTest` |
@@ -135,6 +135,5 @@ flowchart LR
 - **Phase 7 (AWS):** CloudWatch for metrics and logs. Decide between CloudWatch's Prometheus scraping and the ADOT collector. Choose a sampling ratio below 1.0 (the root decides; downstream follows).
 - **Grafana's Jaeger datasource supports the v3 API:** upgrade Jaeger past 2.20.0.
 - **Logs need searching across services:** add Loki locally, or rely on CloudWatch Logs Insights in AWS.
-- **The first DLT record matters before the code fix lands:** register `buzzer.scoring.events.dead.lettered` for both DLT topics at startup, then simplify the alert.
 - **Players on other instances need to be in the trace:** carry `traceparent` inside `RelayMessage`.
 - **A metric's series count grows with traffic** (a new tag, a raw path): treat it as a bug. The `MetricsEndpointTest` id check is the model for a test.

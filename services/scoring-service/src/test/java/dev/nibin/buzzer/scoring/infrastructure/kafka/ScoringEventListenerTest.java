@@ -143,6 +143,21 @@ class ScoringEventListenerTest {
                 .anyMatch(clientId -> clientId.startsWith("consumer-scoring-service-dlt-"));
     }
 
+    /**
+     * Both DLT counters exist from the start, at 0. No test ever dead-letters a lifecycle event, so that counter can
+     * only exist if it was registered up front. Without it, the first record would create the series already at 1,
+     * and the BuzzerScoringDeadLetter alert (increase()) would not see it.
+     */
+    @Test
+    void bothDltCountersExistBeforeAnyRecordIsDeadLettered() {
+        Counter lifecycle = meters.find(ScoringEventListener.DEAD_LETTERED)
+                .tag("topic", SessionLifecycle.TOPIC + "-dlt").counter();
+        assertThat(lifecycle).isNotNull();
+        assertThat(lifecycle.count()).isZero();
+        assertThat(meters.find(ScoringEventListener.DEAD_LETTERED).tag("topic", AnswerSubmitted.TOPIC + "-dlt")
+                .counter()).isNotNull();
+    }
+
     @Test
     void aPoisonRecordSkipsTheRetriesReachesTheDltIsCountedAndItsOffsetMovesOn() throws Exception {
         String dlt = AnswerSubmitted.TOPIC + "-dlt";
