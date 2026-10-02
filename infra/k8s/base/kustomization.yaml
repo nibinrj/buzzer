@@ -1,0 +1,7 @@
+# Environment-neutral: everything that would look the same on any cluster. K.4 adds the services, K.5 observability.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespaces.yaml
+  - data

@@ -1,0 +1,10 @@
+# The local kind cluster (the only overlay: AWS runs ECS, not Kubernetes). kind-specific settings go here so the
+# base stays environment-neutral: image tags, the Traefik NodePort and dev resource sizes from K.4 on.
+# Secrets are deliberately NOT generated here: .\tasks.ps1 kind-up builds them from .env (K.1 D4).
+#   kubectl kustomize infra/k8s/overlays/kind              # print what would be applied
+#   kubectl --context kind-buzzer apply -k infra/k8s/overlays/kind
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base

@@ -31,7 +31,11 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // This chain also guards the management port, and Prometheus sends no token. Actuator is served
                         // ONLY there (management.server.port): on the service port these paths are 404s.
-                        .requestMatchers("/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll()
+                        // /actuator/health/** = the liveness/readiness groups Kubernetes probes, also tokenless.
+                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info",
+                                "/actuator/prometheus").permitAll()
+                        // The same two groups on the service port (probes.add-additional-paths). Status only.
+                        .requestMatchers("/livez", "/readyz").permitAll()
                         // Spring Boot forwards unhandled exceptions to /error. Without this, that forward
                         // is itself denied and a real 500 would reach the client as 401/403.
                         .requestMatchers("/error").permitAll()

@@ -1,0 +1,5 @@
+# Allowlist: the build context is the repo root, but the Dockerfile only needs the built jars.
+# Ignoring everything first means .env, .secrets/, sources and target/ junk can never reach an image or the
+# daemon, and the context stays a few MB.
+*
+!services/*/target/*.jar

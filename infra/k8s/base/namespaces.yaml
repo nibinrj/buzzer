@@ -1,0 +1,15 @@
+# K.1 D6: the app and its data in "buzzer", Prometheus/Grafana/Jaeger/Loki in "observability" (K.5).
+# Applied on its own, before the Secrets, because a Secret can't be created in a namespace that doesn't exist yet.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: buzzer
+  labels:
+    app.kubernetes.io/part-of: buzzer
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    app.kubernetes.io/part-of: buzzer

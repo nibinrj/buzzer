@@ -1,0 +1,11 @@
+# Turns init/01-databases.sql into the ConfigMap the kind cluster's Postgres mounts (infra/k8s/base/data).
+# It lives here, not under infra/k8s, because Kustomize only reads files inside its own directory (the load
+# restrictor). docker-compose mounts init/ and Kubernetes mounts this ConfigMap: one SQL file for both.
+# (This file sits beside init/, not in it, so Postgres's entrypoint never sees it.)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator:
+  - name: postgres-init
+    files:
+      - init/01-databases.sql

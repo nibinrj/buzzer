@@ -27,6 +27,12 @@ management:
     # Actuator on a port of its own, never the public one. Prometheus scrapes it; no route, ALB or Ingress exposes
     # it. MANAGEMENT_SERVER_PORT overrides it (Boot relaxed binding), e.g. in a container.
     port: 9082
+  endpoint:
+    health:
+      probes:
+        # The liveness/readiness groups ALSO as /livez and /readyz on the service port: a Kubernetes probe (or an ALB
+        # health check) then tests the server that carries traffic, not only the management one. Status only.
+        add-additional-paths: true
   endpoints:
     web:
       exposure:

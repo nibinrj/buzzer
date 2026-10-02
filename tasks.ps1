@@ -12,7 +12,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'up', 'obs', 'down', 'nuke', 'build', 'test', 'run', 'health', 'logs', 'keys')]
+    [ValidateSet('help', 'up', 'obs', 'down', 'nuke', 'build', 'test', 'run', 'health', 'logs', 'keys', 'images',
+        'kind-up', 'kind-down')]
     [string] $Task = 'help',
 
     [string] $Svc,
@@ -100,7 +101,44 @@ Usage: .\tasks.ps1 <task> [-Svc <name>]
   health   GET /actuator/health on the management ports 9080-9084
   logs     Follow stack logs: .\tasks.ps1 logs [-Svc postgres]
   keys     Generate the RS256 JWT key pair into .secrets\ (never overwrites)
+  images   Package the jars (no tests) and build buzzer/<svc>:<git sha> for all five services (amd64, local only)
+  kind-up    Create the kind cluster "buzzer" (if missing), its Secrets from .env, and Postgres/Redis/Redpanda
+  kind-down  Delete the kind cluster "buzzer" and ALL its data (compose's data is not touched)
 '@
+}
+
+# kind/kubectl settings. Every kubectl call names the context, so a task can never act on another cluster
+# (kubectl's "current context" may point anywhere).
+$kindCluster = 'buzzer'
+$kubeContext = "kind-$kindCluster"
+
+# Creates or updates one Secret from .env values, without the values touching the disk or a command line:
+# the Secret is built here as JSON (valid YAML) and piped to kubectl over stdin.
+# --server-side: client-side apply would copy the whole object, values included, into the
+# kubectl.kubernetes.io/last-applied-configuration annotation, readable by anyone who can read the Secret's
+# metadata. Server-side apply records only which fields it owns, not their values.
+function Set-KindSecret([string] $Name, [hashtable] $DotEnv, [string[]] $Keys) {
+    $missing = @($Keys | Where-Object { -not $DotEnv.ContainsKey($_) -or -not $DotEnv[$_] })
+    if ($missing) { Stop-Task "Secret ${Name}: .env is missing $($missing -join ', ')" }
+    $data = [ordered]@{}
+    foreach ($key in $Keys) {
+        # A Secret's data values are base64: an encoding for arbitrary bytes, NOT encryption (K.1 §4).
+        $data[$key] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($DotEnv[$key]))
+    }
+    $secret = [ordered]@{
+        apiVersion = 'v1'
+        kind       = 'Secret'
+        type       = 'Opaque'
+        metadata   = [ordered]@{
+            name      = $Name
+            namespace = 'buzzer'
+            labels    = @{ 'app.kubernetes.io/part-of' = 'buzzer'; 'app.kubernetes.io/managed-by' = 'tasks.ps1' }
+        }
+        data       = $data
+    }
+    $secret | ConvertTo-Json -Depth 5 |
+        kubectl --context $kubeContext apply --server-side --field-manager=tasks-ps1 -f - | Out-Host
+    if ($LASTEXITCODE -ne 0) { Stop-Task "kubectl apply failed for Secret $Name" }
 }
 
 $mvnw = Join-Path $PSScriptRoot 'mvnw.cmd'
@@ -219,6 +257,78 @@ try {
             Invoke-Native $openssl @('pkey', '-in', $privateKey, '-pubout', '-out', $publicKey)
             Write-Host "Created $privateKey and $publicKey (using $openssl)" -ForegroundColor Green
         }
+
+        'images' {
+            # Jars first, built on the host like CI will. No tests here: that's what build is for.
+            Invoke-Native $mvnw @('-q', '-DskipTests', 'package')
+
+            # Tag = the commit the jars came from, never "latest" (kind would try to pull "latest" from Docker Hub).
+            # "-dirty" marks images built from uncommitted changes, so a tag never claims a commit it doesn't match.
+            $revision = & git rev-parse --short HEAD
+            if ($LASTEXITCODE -ne 0) { Stop-Task 'git rev-parse failed: images are tagged with the commit id.' }
+            $tag = if (& git status --porcelain) { "$revision-dirty" } else { $revision }
+
+            # amd64 only: kind runs amd64 here. The arm64 build for ECS needs a registry push (Phase 6.5).
+            foreach ($service in (Get-ChildItem 'services' -Directory).Name) {
+                Invoke-Native docker @('build', '--platform', 'linux/amd64',
+                    '--build-arg', "SERVICE=$service", '--build-arg', "REVISION=$tag",
+                    '--tag', "buzzer/${service}:$tag", '.')
+            }
+            Write-Host "Built buzzer/<service>:$tag for: $((Get-ChildItem 'services' -Directory).Name -join ', ')" -ForegroundColor Green
+        }
+
+        'kind-up' {
+            $dotEnvPath = Join-Path $PSScriptRoot '.env'
+            if (-not (Test-Path -LiteralPath $dotEnvPath)) {
+                Stop-Task 'No .env found. Create it first: Copy-Item .env.example .env (then set real passwords).'
+            }
+            $dotEnv = Read-DotEnv $dotEnvPath
+
+            # Re-running is safe: an existing cluster is reused and every apply below is idempotent.
+            $clusters = & kind get clusters 2>$null
+            if ($LASTEXITCODE -ne 0) { Stop-Task 'kind not found or failed. Install kind and check Docker Desktop is running.' }
+            if ($clusters -notcontains $kindCluster) {
+                Invoke-Native kind @('create', 'cluster', '--config', 'infra/k8s/kind-config.yaml')
+            }
+            else {
+                Write-Host "kind cluster '$kindCluster' already exists, reusing it."
+            }
+
+            # Order matters: namespaces, then the Secrets that live in them, then the pods that read the Secrets.
+            Invoke-Native kubectl @('--context', $kubeContext, 'apply', '-f', 'infra/k8s/base/namespaces.yaml')
+            # One Secret per concern (K.1 D4): a pod only gets the values it needs.
+            Set-KindSecret 'postgres-credentials' $dotEnv @('POSTGRES_USER', 'POSTGRES_PASSWORD',
+                'IDENTITY_DB_PASSWORD', 'QUIZ_DB_PASSWORD', 'SESSION_DB_PASSWORD', 'SCORING_DB_PASSWORD')
+            Set-KindSecret 'redis-credentials' $dotEnv @('REDIS_PASSWORD')
+
+            # Images come from this PC's Docker, not from a download inside the node: `kind load` copies each one
+            # into the node's containerd. Docker Desktop already has them (compose, .\tasks.ps1 images), and the node
+            # pulling a second copy over its own network path is slower and can fail on its own. The list is read
+            # from the rendered manifests, so a new image in a manifest is picked up without editing this task.
+            $rendered = & kubectl kustomize 'infra/k8s/overlays/kind'
+            if ($LASTEXITCODE -ne 0) { Stop-Task 'kubectl kustomize failed: fix the manifests first.' }
+            $images = $rendered | Select-String -Pattern '^\s+image:\s*(\S+)' |
+                ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique
+            foreach ($image in $images) {
+                & docker image inspect $image *> $null
+                if ($LASTEXITCODE -ne 0) { Invoke-Native docker @('pull', $image) }
+                Invoke-Native kind @('load', 'docker-image', $image, '--name', $kindCluster)
+            }
+
+            Invoke-Native kubectl @('--context', $kubeContext, 'apply', '-k', 'infra/k8s/overlays/kind')
+
+            # rollout status waits for the pods to exist AND be ready (kubectl wait fails if the StatefulSet
+            # controller hasn't created the pod yet). Postgres's first start runs initdb + the init SQL.
+            foreach ($statefulSet in 'postgres', 'redis', 'redpanda') {
+                Invoke-Native kubectl @('--context', $kubeContext, '-n', 'buzzer', 'rollout', 'status',
+                    "statefulset/$statefulSet", '--timeout=300s')
+            }
+            Invoke-Native kubectl @('--context', $kubeContext, '-n', 'buzzer', 'get', 'pods,pvc')
+            Write-Host "Cluster '$kindCluster' is up (context $kubeContext). Data layer ready." -ForegroundColor Green
+        }
+
+        # Deleting the cluster deletes its PVCs too: in-cluster data is dev scaffolding (K.1 §9).
+        'kind-down' { Invoke-Native kind @('delete', 'cluster', '--name', $kindCluster) }
     }
 }
 finally {

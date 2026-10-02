@@ -58,7 +58,12 @@ public class SecurityConfig {
                 .authorizeExchange(exchange -> exchange
                         // This chain also guards the management port, and Prometheus sends no token. Actuator is
                         // served ONLY there (management.server.port): on the public port these paths are 404s.
-                        .pathMatchers("/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll()
+                        // /actuator/health/** = the liveness/readiness groups Kubernetes probes, also tokenless.
+                        .pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info",
+                                "/actuator/prometheus").permitAll()
+                        // The same two groups on the public port (probes.add-additional-paths). Status only, and the
+                        // cluster edge (K.4) forwards only the API paths, so they aren't reachable from outside.
+                        .pathMatchers("/livez", "/readyz").permitAll()
                         .pathMatchers(PUBLIC_PATHS).permitAll()
                         // Everything else, routed or not, needs a valid token. Unrouted paths then 404.
                         .anyExchange().authenticated())

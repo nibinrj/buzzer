@@ -1,0 +1,101 @@
+# Dev-only Postgres 16 (in AWS this is RDS, Phase 7). Same image and init SQL as docker-compose.
+# The four per-service databases and roles are created by 01-databases.sql on the FIRST start of an empty volume
+# only; changing a password in .env later needs .\tasks.ps1 kind-down + kind-up (like `docker compose down -v`).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  # Headless: DNS "postgres" returns the pod's own IP, no virtual IP. A StatefulSet needs a headless Service for
+  # its stable pod names (postgres-0.postgres), and with one pod it also serves the clients.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+    spec:
+      # Kubernetes would inject POSTGRES_PORT=tcp://… for the Service above (K.1 gotcha 1). Off on every pod.
+      enableServiceLinks: false
+      securityContext:
+        # The image's "postgres" user. Running as it from the start (instead of root + gosu) works because the
+        # data directory is a fresh volume it can write.
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        runAsNonRoot: true
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            # A subdirectory of the mount, the image's advice for volumes: initdb refuses a non-empty directory.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          envFrom:
+            # POSTGRES_USER, POSTGRES_PASSWORD and the four *_DB_PASSWORD read by \getenv in the init SQL.
+            # Created by .\tasks.ps1 kind-up from .env, never stored in the repo.
+            - secretRef:
+                name: postgres-credentials
+          # TCP, not the socket: while init runs, the temporary server listens on the unix socket only, so this
+          # stays unready until the init SQL has finished and the real server is up (same as compose).
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -U \"$POSTGRES_USER\" -d postgres"]
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -U \"$POSTGRES_USER\" -d postgres"]
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init   # Kustomize rewrites this to the generated name with its content hash
+  volumeClaimTemplates:
+    # One PVC per pod (data-postgres-0), kept across pod restarts. kind's default StorageClass is a directory
+    # inside the node container: it survives pod deletion, not kind-down.
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

@@ -1,0 +1,19 @@
+# The data layer: Postgres, Redis, Redpanda. Dev-only: in AWS these are RDS, ElastiCache and MSK.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Applied here and not in an outer kustomization: Kustomize's namespace transformer would also rename Namespace
+# objects (base/namespaces.yaml) to "buzzer".
+namespace: buzzer
+
+resources:
+  - ../../../local/postgres   # the postgres-init ConfigMap, generated next to the SQL it reads
+  - postgres.yaml
+  - redis.yaml
+  - redpanda.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: buzzer
+    # Labels only, not selectors: a StatefulSet's selector is immutable once created.
+    includeSelectors: false
