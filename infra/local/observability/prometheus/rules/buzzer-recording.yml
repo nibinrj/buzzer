@@ -1,0 +1,16 @@
+# Recording rules: PromQL Prometheus evaluates every evaluation_interval and stores as a new series, so dashboards
+# and alerts read one cheap name instead of repeating the expression.
+groups:
+  - name: buzzer-recording
+    rules:
+      # Consumer lag measured by the BROKER (Redpanda), per group, topic and partition: how far each group's committed
+      # position is behind the partition's end. Unlike the consumer's own kafka_consumer_fetch_manager_records_lag,
+      # this keeps rising while the consumer is down. Equal offsets (lag 0) when everything has been read: checked
+      # against the running broker in O.7.
+      #   max by (...)         drops Redpanda's shard label from both sides
+      #   on (...) group_right many committed offsets (one per group) per partition end; the result keeps the group
+      - record: buzzer:consumer_group_lag
+        expr: |
+          max by (redpanda_topic, redpanda_partition) (redpanda_kafka_max_offset{redpanda_namespace="kafka"})
+          - on (redpanda_topic, redpanda_partition) group_right
+          max by (redpanda_group, redpanda_topic, redpanda_partition) (redpanda_kafka_consumer_group_committed_offset)

@@ -1,0 +1,72 @@
+# Alert rules. Prometheus evaluates them every 15 s; firing alerts show at http://localhost:9090/alerts and in
+# Grafana. Locally nothing is notified (no Alertmanager): in AWS, CloudWatch alarms play this part (Phase 7).
+# Every alert names the dashboard panel that explains it.
+groups:
+  - name: buzzer-alerts
+    rules:
+      # A record in a DLT is a score (or a lifecycle change) that is MISSING until a human drains it (ADR-005).
+      # increase() over a window rather than "total > 0": the counter restarts at 0 with the service, and a counter
+      # that only ever grows would keep the alert firing forever after the first record.
+      # The second half: this counter only comes into existence with the FIRST dead-lettered record (it isn't
+      # registered at 0 in advance), so its first sample is already 1 and increase() sees no increase. "Exists now
+      # but did not 15 minutes ago" catches that first one.
+      - alert: BuzzerScoringDeadLetter
+        expr: |
+          sum by (topic) (increase(buzzer_scoring_events_dead_lettered_total[15m])) > 0
+          or
+          sum by (topic) (buzzer_scoring_events_dead_lettered_total
+                          unless buzzer_scoring_events_dead_lettered_total offset 15m) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Records reached {{ $labels.topic }}: scores are missing"
+          description: >-
+            {{ $value | humanize }} record(s) in the last 15 min. Drain by hand (ADR-005, "What goes to the DLT").
+            Panel: Buzzer Game / Dead-lettered.
+
+      # Broker-measured lag (buzzer:consumer_group_lag): fires even when scoring-service is down, which is exactly
+      # when the consumer's own lag metric stops existing. 100 records: a full room's answers to one question arrive
+      # within seconds, so short spikes are normal; one minute above it means scoring is not keeping up.
+      - alert: BuzzerScoringLagHigh
+        expr: sum by (redpanda_topic) (buzzer:consumer_group_lag{redpanda_group="scoring-service"}) > 100
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "scoring-service is {{ $value | humanize }} records behind on {{ $labels.redpanda_topic }}"
+          description: "Is scoring-service running (BuzzerServiceDown)? Panel: Buzzer Game / Scoring lag at the broker."
+
+      # The answer's whole server-side trip (O.4), p99 over 5 min, against the 100 ms target. No traffic gives NaN,
+      # and NaN never fires.
+      - alert: BuzzerAckLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le) (rate(buzzer_answer_ack_latency_seconds_bucket[5m]))) > 0.1
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: "Answer ack p99 is {{ $value | humanizeDuration }} (target 100 ms)"
+          description: >-
+            Compare end-to-end with the controller part: if only end-to-end grew, the STOMP thread pools are queueing.
+            Panels: Buzzer Game / Ack latency, Where the time goes.
+
+      # The outbox's oldest unsent row (O.4). 5 s is many publisher runs (every 300 ms): the publisher is stuck or
+      # Kafka is refusing. max(): every session-service instance reports the same database-wide number.
+      - alert: BuzzerOutboxStuck
+        expr: max(buzzer_outbox_oldest_unsent_age_seconds) > 5
+        for: 30s
+        labels:
+          severity: page
+        annotations:
+          summary: "An outbox event has waited {{ $value | humanizeDuration }}: Kafka unreachable or publisher stuck"
+          description: "Answers still get acked, but scoring sees nothing. Panel: Buzzer Game / Outbox."
+
+      # A scrape target that doesn't answer. Covers the case every metric above misses: a dead service reports
+      # nothing at all. Locally it also fires for services you simply haven't started.
+      - alert: BuzzerServiceDown
+        expr: up{job="buzzer"} == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.instance }} has not answered a scrape for 1 min"
+          description: "Panel: Buzzer Service RED / Up."

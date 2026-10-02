@@ -1,0 +1,123 @@
+{
+  "uid": "buzzer-service-red",
+  "title": "Buzzer Service RED",
+  "description": "Rate, Errors, Duration for every service's HTTP endpoints (http.server.requests) and the gateway's routes (spring.cloud.gateway.requests). Pick services with the variable. Actuator requests are left out.",
+  "tags": ["buzzer"],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "annotations": { "list": [] },
+  "templating": {
+    "list": [
+      {
+        "name": "application", "label": "Service", "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(http_server_requests_seconds_count, application)", "refId": "application" },
+        "definition": "label_values(http_server_requests_seconds_count, application)",
+        "refresh": 2, "includeAll": true, "multi": true, "allValue": ".*",
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] }
+      }
+    ]
+  },
+  "panels": [
+    { "id": 1, "type": "row", "title": "Services", "collapsed": false, "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+    {
+      "id": 2, "type": "stat", "title": "Up",
+      "description": "1 = Prometheus scraped the service's management port; 0 = it didn't answer (alert BuzzerServiceDown).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] },
+          "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } } ]
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "textMode": "value_and_name" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "up{job=\"buzzer\"}", "legendFormat": "{{instance}}" }
+      ]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Rate: requests/s by endpoint",
+      "description": "uri is the route template (/api/sessions/{sessionId}/state), never the raw path: one series per endpoint, not per id.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (application, method, uri) (rate(http_server_requests_seconds_count{application=~\"$application\", uri!~\"/actuator.*\"}[1m]))",
+          "legendFormat": "{{application}} {{method}} {{uri}}" }
+      ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Errors: share of 5xx responses",
+      "description": "Server errors as a fraction of all requests, per service. 4xx (refused tokens, not found) are the client's business and not counted.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (application) (rate(http_server_requests_seconds_count{application=~\"$application\", uri!~\"/actuator.*\", status=~\"5..\"}[5m])) / sum by (application) (rate(http_server_requests_seconds_count{application=~\"$application\", uri!~\"/actuator.*\"}[5m]))",
+          "legendFormat": "{{application}}" }
+      ]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Duration: p95 by endpoint",
+      "description": "From the 10 fixed buckets (5 ms to 5 s), summed across instances before the quantile.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "exemplar": true,
+          "expr": "histogram_quantile(0.95, sum by (le, application, uri) (rate(http_server_requests_seconds_bucket{application=~\"$application\", uri!~\"/actuator.*\"}[5m])))",
+          "legendFormat": "{{application}} {{uri}}" }
+      ]
+    },
+
+    { "id": 10, "type": "row", "title": "Gateway routes", "collapsed": false, "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 } },
+    {
+      "id": 11, "type": "timeseries", "title": "Rate: requests/s by route",
+      "description": "Requests the gateway forwarded, per route (identity, quiz, session, scoring). Refused at the edge (401, 429) don't reach a route.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (routeId) (rate(spring_cloud_gateway_requests_seconds_count[1m]))", "legendFormat": "{{routeId}}" }
+      ]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Errors: share of 5xx by route",
+      "description": "Includes the gateway's own 502/503/504 when a service is down or slow.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (routeId) (rate(spring_cloud_gateway_requests_seconds_count{httpStatusCode=~\"5..\"}[5m])) / sum by (routeId) (rate(spring_cloud_gateway_requests_seconds_count[5m]))",
+          "legendFormat": "{{routeId}}" }
+      ]
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Duration: p95 by route",
+      "description": "Gateway-side time per route: the service's time plus the hop. Compare with the service's own p95 above.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, routeId) (rate(spring_cloud_gateway_requests_seconds_bucket[5m])))",
+          "legendFormat": "{{routeId}}" }
+      ]
+    }
+  ]
+}

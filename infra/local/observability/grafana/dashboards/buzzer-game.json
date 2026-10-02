@@ -1,0 +1,211 @@
+{
+  "uid": "buzzer-game",
+  "title": "Buzzer Game",
+  "description": "One game, top to bottom as an answer travels: answered and acked (session-service), the outbox and Kafka, scored (scoring-service), and pushed back as a leaderboard. Gauges that come from Postgres use max() (every instance reports the same number); per-instance ones use sum().",
+  "tags": ["buzzer"],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    { "id": 1, "type": "row", "title": "Answers (session-service)", "collapsed": false, "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+    {
+      "id": 2, "type": "timeseries", "title": "Answers/s by outcome",
+      "description": "Every answer by what became of it: ACCEPTED, DUPLICATE, LATE, CLOSED, ... From the end-to-end timer's _count (a timer is also a counter).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "stacking": { "mode": "normal" }, "fillOpacity": 30 } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (outcome) (rate(buzzer_answer_ack_latency_seconds_count[1m]))", "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Ack latency (end to end on the server)",
+      "description": "Frame arrived to ack handed to the socket, p50/p95/p99 from histogram buckets summed over all instances. Target: p99 under 100 ms (alert BuzzerAckLatencyHigh). No exemplars here: this timer is stopped on the outbound thread, outside the answer's trace; see the next panel.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(buzzer_answer_ack_latency_seconds_bucket[1m])))", "legendFormat": "p50" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(buzzer_answer_ack_latency_seconds_bucket[1m])))", "legendFormat": "p95" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(buzzer_answer_ack_latency_seconds_bucket[1m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Where the time goes (p95)",
+      "description": "End to end vs the controller alone (Redis + Postgres). A growing gap is time queued in the STOMP thread pools, not in the database. Dots on the controller line are exemplars (recorded inside the answer's trace): click one to open it in Jaeger.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(buzzer_answer_ack_latency_seconds_bucket[1m])))", "legendFormat": "end to end" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "exemplar": true,
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(buzzer_answer_handling_seconds_bucket[1m])))", "legendFormat": "controller (Redis + Postgres)" }
+      ]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Connected WebSockets",
+      "description": "Open STOMP connections, summed over session-service instances (each instance counts its own).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(buzzer_websocket_connections)" }
+      ]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Games in progress",
+      "description": "Sessions IN_PROGRESS in Postgres. max(): every instance reports the same database-wide count.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max(buzzer_sessions_active)" }
+      ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Redis relay publish failures/min",
+      "description": "Broadcasts no instance delivered. Players catch up only by reloading /state.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(buzzer_relay_publish_failures_total[1m])) * 60", "legendFormat": "failures/min" }
+      ]
+    },
+
+    { "id": 10, "type": "row", "title": "Outbox, Kafka and scoring", "collapsed": false, "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 } },
+    {
+      "id": 11, "type": "timeseries", "title": "Outbox",
+      "description": "Rows waiting for Kafka, and how long the oldest has waited (alert BuzzerOutboxStuck above 5 s). Database-wide: max().",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 18 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "oldest unsent age" },
+            "properties": [ { "id": "unit", "value": "s" }, { "id": "custom.axisPlacement", "value": "right" } ] }
+        ]
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(buzzer_outbox_backlog)", "legendFormat": "backlog (rows)" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(buzzer_outbox_oldest_unsent_age_seconds)", "legendFormat": "oldest unsent age" }
+      ]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Scoring lag at the broker",
+      "description": "Records written but not yet processed by scoring-service, measured by Redpanda (recording rule buzzer:consumer_group_lag). Keeps rising while scoring-service is down, unlike the consumer's own lag metric. Alert BuzzerScoringLagHigh.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (redpanda_topic) (buzzer:consumer_group_lag{redpanda_group=\"scoring-service\"})", "legendFormat": "{{redpanda_topic}}" }
+      ]
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Scoring delay",
+      "description": "Answer accepted (Redis clock) to score committed (scoring JVM clock): outbox poll + Kafka + scoring, and retries. Two clocks: ignore single-digit milliseconds.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(buzzer_scoring_delay_seconds_bucket[1m])))", "legendFormat": "p50" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(buzzer_scoring_delay_seconds_bucket[1m])))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "id": 14, "type": "timeseries", "title": "Events applied vs skipped as duplicates",
+      "description": "Each event is applied once; duplicates are redeliveries and retries that processed_events turned away (ADR-005).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 26 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (type, result) (rate(buzzer_scoring_events_total[1m]))", "legendFormat": "{{type}} {{result}}" }
+      ]
+    },
+    {
+      "id": 15, "type": "stat", "title": "Dead-lettered (last hour)",
+      "description": "Records in a DLT: scores missing until drained by hand (ADR-005). Alert BuzzerScoringDeadLetter. Empty (no data) until the first one ever.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 26 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short", "noValue": "0",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(buzzer_scoring_events_dead_lettered_total[1h]))" }
+      ]
+    },
+    {
+      "id": 16, "type": "timeseries", "title": "Consumer lag reported by the consumers",
+      "description": "Each Kafka consumer's own maximum lag (Kafka client metric). Disappears when the consumer is down: compare with 'Scoring lag at the broker'.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 26 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max by (application, client_id) (kafka_consumer_fetch_manager_records_lag_max)", "legendFormat": "{{application}} {{client_id}}" }
+      ]
+    },
+
+    { "id": 20, "type": "row", "title": "Leaderboard", "collapsed": false, "panels": [],
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 } },
+    {
+      "id": 21, "type": "timeseries", "title": "ScoreUpdated/s (scoring-service)",
+      "description": "published: the top 10 may have changed. outside_top: the answering player is outside it, nothing sent. In a full room, outside_top should dominate.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 35 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (result) (rate(buzzer_scoring_score_updates_total[1m]))", "legendFormat": "{{result}}" }
+      ]
+    },
+    {
+      "id": 22, "type": "timeseries", "title": "Leaderboard pushes/s (session-service)",
+      "description": "What became of each ScoreUpdated read: pushed, older (a newer one was already pushed), redis_unavailable, unreadable.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 35 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (result) (rate(buzzer_leaderboard_pushes_total[1m]))", "legendFormat": "{{result}}" }
+      ]
+    },
+    {
+      "id": 23, "type": "timeseries", "title": "Leaderboards restored from Postgres",
+      "description": "Lost Redis copies rebuilt (a session's first build isn't counted). A steady rate means keys expire mid-game.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 35 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(buzzer_scoring_leaderboard_rebuilds_total[5m]))", "legendFormat": "rebuilds per 5 min" }
+      ]
+    }
+  ]
+}
