@@ -12,7 +12,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'up', 'down', 'nuke', 'build', 'test', 'run', 'health', 'logs', 'keys')]
+    [ValidateSet('help', 'up', 'obs', 'down', 'nuke', 'build', 'test', 'run', 'health', 'logs', 'keys')]
     [string] $Task = 'help',
 
     [string] $Svc,
@@ -90,6 +90,7 @@ Usage: .\tasks.ps1 <task> [-Svc <name>]
 
   help     Show this list
   up       Start postgres, redis, redpanda and wait until healthy
+  obs      Start Prometheus, Grafana and Jaeger (profile obs) and open their pages
   down     Stop the local stack (data volumes are kept)
   nuke     Stop the stack AND delete its data volumes (asks first)
   build    .\mvnw.cmd verify (all modules, with tests)
@@ -113,13 +114,26 @@ try {
 
         'up' { Invoke-Native docker @('compose', 'up', '-d', '--wait') }
 
-        'down' { Invoke-Native docker @('compose', 'down') }
+        'obs' {
+            # Profile "obs" in docker-compose.yml. Grafana needs GRAFANA_ADMIN_PASSWORD in .env; the services send
+            # traces to Jaeger once MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT is set there too.
+            Invoke-Native docker @('compose', '--profile', 'obs', 'up', '-d', '--wait')
+            Write-Host 'Grafana     http://localhost:3000 (admin / GRAFANA_ADMIN_PASSWORD)'
+            Write-Host 'Prometheus  http://localhost:9090/targets'
+            Write-Host 'Jaeger      http://localhost:16686'
+            foreach ($url in 'http://localhost:3000', 'http://localhost:9090/targets', 'http://localhost:16686') {
+                Start-Process $url
+            }
+        }
+
+        # --profile obs: also stops the observability containers, if they run.
+        'down' { Invoke-Native docker @('compose', '--profile', 'obs', 'down') }
 
         'nuke' {
-            Write-Host 'This deletes ALL local data: the postgres, redis and redpanda volumes.' -ForegroundColor Yellow
+            Write-Host 'This deletes ALL local data: the postgres, redis, redpanda and prometheus volumes.' -ForegroundColor Yellow
             $answer = Read-Host "Type 'yes' to continue"
             if ($answer -cne 'yes') { Stop-Task 'Aborted. Nothing was deleted.' }
-            Invoke-Native docker @('compose', 'down', '-v')
+            Invoke-Native docker @('compose', '--profile', 'obs', 'down', '-v')
         }
 
         'build' { Invoke-Native $mvnw @('verify') }
@@ -181,7 +195,7 @@ try {
         }
 
         'logs' {
-            $logArgs = @('compose', 'logs', '-f', '--tail=100')
+            $logArgs = @('compose', '--profile', 'obs', 'logs', '-f', '--tail=100')
             if ($Svc) { $logArgs += $Svc }
             Invoke-Native docker $logArgs
         }

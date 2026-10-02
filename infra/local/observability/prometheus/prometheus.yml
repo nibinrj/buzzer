@@ -1,0 +1,33 @@
+# Prometheus for the local stack (docker compose --profile obs). Pulls every 15 s; nothing pushes to it.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Recording and alert rules (O.8). An empty folder is fine.
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # The five services run on the host (.\tasks.ps1 run), so Prometheus reaches them through host.docker.internal
+  # (docker-compose.yml maps it on Linux too). Their management ports (O.3), never the public ones.
+  # Prometheus adds job and instance (host:port) itself; the services add application.
+  - job_name: buzzer
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:9080 # gateway
+          - host.docker.internal:9081 # identity-service
+          - host.docker.internal:9082 # quiz-service
+          - host.docker.internal:9083 # session-service
+          - host.docker.internal:9084 # scoring-service
+
+  # Redpanda's own metrics, from inside the compose network (its admin port 9644 isn't published). The broker side
+  # of consumer lag: redpanda_kafka_max_offset (each partition's end) minus
+  # redpanda_kafka_consumer_group_committed_offset (each group's position). Unlike the consumer's own lag metric, it
+  # keeps rising while scoring-service is down. O.8 turns the difference into a rule and an alert.
+  - job_name: redpanda
+    metrics_path: /public_metrics
+    static_configs:
+      - targets:
+          - redpanda:9644

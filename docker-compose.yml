@@ -67,7 +67,73 @@ services:
       retries: 10
       start_period: 15s
 
+  # --- Observability (profile "obs": .\tasks.ps1 obs). Images pinned to the latest stable tags on Docker Hub as of
+  # 2026-10-02 (hub.docker.com/v2/repositories/<image>/tags). Config in infra/local/observability/.
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: [obs]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      # Keep the exemplars (sample trace ids) the services attach to histogram buckets: Grafana links them to Jaeger.
+      - --enable-feature=exemplar-storage
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      # The services run on the host. Docker Desktop provides this name; on Linux, this line does.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./infra/local/observability/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Jaeger v2: one process holding the OTLP receiver, in-memory storage and the UI. Traces are lost on restart: fine
+  # for a local stack. The services send OTLP over HTTP to localhost:4318 (MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_
+  # OTLP_ENDPOINT in .env). No healthcheck: the image has no shell or HTTP client to run one with.
+  # 2.20.0, NOT the newer 2.21.0: 2.21.0 removed the v1 HTTP API (/api/services, /api/traces; release notes, #9260),
+  # which is what Grafana's Jaeger datasource calls. Its own UI moved to /api/v3. Revisit when Grafana's datasource does.
+  jaeger:
+    image: jaegertracing/jaeger:2.20.0
+    profiles: [obs]
+    ports:
+      - "16686:16686" # UI
+      - "4318:4318"   # OTLP over HTTP
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    profiles: [obs]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Grafana 13 replaces bundled core plugins (prometheus among them) with downloads from grafana.com at startup.
+      # When that download failed, the bundled Prometheus plugin was gone and the datasource broke. Use the bundled
+      # ones and download nothing: the stack also starts offline.
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    ports:
+      - "3000:3000"
+    # No data volume on purpose: datasources and dashboards come from files on every start, and the admin password
+    # from .env applies every time (Grafana only reads it when it creates its database).
+    volumes:
+      - ./infra/local/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/local/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/api/health || curl -fs http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
 volumes:
   postgres-data:
   redis-data:
   redpanda-data:
+  prometheus-data:

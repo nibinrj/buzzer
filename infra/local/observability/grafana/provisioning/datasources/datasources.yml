@@ -1,0 +1,23 @@
+# Grafana reads this at startup (provisioning): the datasources exist without anyone clicking them together, and are
+# recreated the same way on every start. Fixed uids, so dashboards (O.8) can refer to them.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      # Histogram buckets carry exemplars: a sample trace id per bucket (Micrometer adds them while tracing is on).
+      # This turns each exemplar dot on a latency graph into a link to that trace in Jaeger.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: jaeger
+
+  - name: Jaeger
+    uid: jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
