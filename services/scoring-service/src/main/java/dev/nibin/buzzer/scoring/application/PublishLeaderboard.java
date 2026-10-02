@@ -40,17 +40,25 @@ public class PublishLeaderboard {
         this.publisher = publisher;
     }
 
-    public void afterAnswer(UUID sessionId, UUID playerId) {
+    /** @return whether a ScoreUpdated went out; the caller counts these (buzzer.scoring.score.updates) */
+    public Outcome afterAnswer(UUID sessionId, UUID playerId) {
         PlayerPoints total = scoring.pointsOf(sessionId, playerId).orElseThrow(() -> new IllegalStateException(
                 "no total for a player whose answer was committed")); // the caller only runs after the commit
         Placement placement = leaderboard.raise(sessionId, total).orElseGet(() -> rebuildAndRaise(sessionId, total));
         if (!placement.inTop()) {
-            return;
+            return Outcome.OUTSIDE_TOP;
         }
         // Read after the Redis write: the version then counts at least every answer the snapshot contains.
         long version = scoring.session(sessionId).map(ScoringSession::version).orElseThrow();
         publisher.publish(new ScoreUpdated(UUID.randomUUID(), sessionId, entries(placement.top()), version,
                 ScoreUpdated.SCHEMA_VERSION));
+        return Outcome.PUBLISHED;
+    }
+
+    public enum Outcome {
+        PUBLISHED,
+        /** The player is outside the top 10 after this answer, so the top 10 didn't change: nothing sent. */
+        OUTSIDE_TOP
     }
 
     /** The Redis copy expired or was lost: refill it from Postgres (which already has this answer), then retry. */

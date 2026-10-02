@@ -44,7 +44,7 @@ class PublishLeaderboardTest {
         when(leaderboard.raise(session, bobsTotal)).thenReturn(Optional.of(new Placement(1, top)));
         when(scoring.session(session)).thenReturn(Optional.of(new ScoringSession(session, 5, 1L, null, 7)));
 
-        publish.afterAnswer(session, bob);
+        assertThat(publish.afterAnswer(session, bob)).isEqualTo(PublishLeaderboard.Outcome.PUBLISHED);
 
         ArgumentCaptor<ScoreUpdated> sent = ArgumentCaptor.forClass(ScoreUpdated.class);
         verify(publisher).publish(sent.capture());
@@ -62,7 +62,7 @@ class PublishLeaderboardTest {
         when(scoring.pointsOf(session, bob)).thenReturn(Optional.of(bobsTotal));
         when(leaderboard.raise(session, bobsTotal)).thenReturn(Optional.of(new Placement(Leaderboard.SIZE, top)));
 
-        publish.afterAnswer(session, bob);
+        assertThat(publish.afterAnswer(session, bob)).isEqualTo(PublishLeaderboard.Outcome.OUTSIDE_TOP);
 
         verify(publisher, never()).publish(any());
         verify(scoring, never()).session(any()); // not even the version is read

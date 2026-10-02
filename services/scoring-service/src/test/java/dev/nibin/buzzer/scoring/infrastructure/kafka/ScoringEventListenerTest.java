@@ -109,6 +109,9 @@ class ScoringEventListenerTest {
         UUID ada = UUID.randomUUID();
         AnswerSubmitted first = answer(ada, true, 1);
         AnswerSubmitted marker = answer(ada, false, 0);
+        double applied = events("applied");
+        double duplicates = events("duplicate");
+        long delays = meters.get(ScoringEventListener.DELAY).timer().count();
 
         send(first);
         send(first); // the same eventId again: what an outbox resend or a consumer redelivery looks like
@@ -117,6 +120,27 @@ class ScoringEventListenerTest {
         await().atMost(WAIT).until(() -> processed(marker.eventId()));
         assertThat(score(ada)).contains(new Score(1000, 2, 1)); // 1000 + 0, from 2 answers, not 3
         verify(scoring, times(2)).markProcessed(first.eventId()); // the copy was read, and skipped
+        // buzzer.scoring.events and buzzer.scoring.delay: 2 applied and timed, 1 skipped as a duplicate (not timed).
+        // Counted just after each transaction returns, a moment after processed_events shows it: await.
+        await().atMost(WAIT).until(() -> events("applied") == applied + 2);
+        assertThat(events("duplicate")).isEqualTo(duplicates + 1);
+        assertThat(meters.get(ScoringEventListener.DELAY).timer().count()).isEqualTo(delays + 2);
+    }
+
+    /**
+     * Lag comes from the Kafka client itself; Boot's KafkaMetricsAutoConfiguration binds its metrics to Micrometer.
+     * Per consumer at once: records.lag.max, one series per client (main, retry-1000, retry-2000, dlt). Per partition
+     * (records.lag{topic, partition}) only later: Kafka creates those on the first fetch from a partition, and
+     * Micrometer looks for new client metrics every 60 s, so they appear up to a minute after the consumer starts.
+     * Not waited for here. Either way they are reported BY the consumer: if scoring-service is down, they vanish
+     * instead of rising.
+     */
+    @Test
+    void eachConsumerReportsItsMaximumLagAndTheMainOneIsAmongThem() {
+        assertThat(meters.find("kafka.consumer.fetch.manager.records.lag.max").gauges())
+                .extracting(gauge -> gauge.getId().getTag("client.id"))
+                .anyMatch(clientId -> clientId.matches("consumer-scoring-service-\\d+")) // the main group
+                .anyMatch(clientId -> clientId.startsWith("consumer-scoring-service-dlt-"));
     }
 
     @Test
@@ -279,6 +303,11 @@ class ScoringEventListenerTest {
     /** The captured JSON log lines (application.yml: ECS on the console); anything else is skipped. */
     private Stream<JsonNode> logLines(CapturedOutput output) {
         return output.getOut().lines().filter(line -> line.startsWith("{")).map(json::readTree);
+    }
+
+    private double events(String result) {
+        return meters.get(ScoringEventListener.EVENTS).tag("type", "AnswerSubmitted").tag("result", result).counter()
+                .count();
     }
 
     private boolean processed(UUID eventId) {

@@ -2,6 +2,8 @@ package dev.nibin.buzzer.scoring.infrastructure.redis;
 
 import dev.nibin.buzzer.scoring.domain.Leaderboard;
 import dev.nibin.buzzer.scoring.domain.PlayerPoints;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -36,12 +38,24 @@ class RedisLeaderboard implements Leaderboard {
     private static final RedisScript<Long> REBUILD =
             RedisScript.of(new ClassPathResource("lua/rebuild_leaderboard.lua"), Long.class);
 
+    /**
+     * Lost Redis copies restored from Postgres, by either path (an answer, or GET /leaderboard); see rebuild for what
+     * isn't counted. A few after a Redis restart are expected; a steady rate means keys expire mid-game
+     * (scoring.leaderboard.ttl too short).
+     */
+    static final String REBUILDS = "buzzer.scoring.leaderboard.rebuilds";
+
     private final StringRedisTemplate redis;
     private final String ttlSeconds;
+    private final Counter rebuilds;
 
-    RedisLeaderboard(StringRedisTemplate redis, @Value("${scoring.leaderboard.ttl}") Duration ttl) {
+    RedisLeaderboard(StringRedisTemplate redis, @Value("${scoring.leaderboard.ttl}") Duration ttl,
+            MeterRegistry meters) {
         this.redis = redis;
         this.ttlSeconds = String.valueOf(ttl.toSeconds());
+        this.rebuilds = Counter.builder(REBUILDS)
+                .description("Redis leaderboards rebuilt from Postgres")
+                .register(meters);
     }
 
     static String key(UUID sessionId) {
@@ -79,6 +93,13 @@ class RedisLeaderboard implements Leaderboard {
             args.add(String.valueOf(total.points()));
         }
         redis.execute(REBUILD, List.of(key(sessionId)), args.toArray());
+        // A session's FIRST answer comes through here too (its key doesn't exist yet), always with exactly one total:
+        // one partition, one consumer thread, so no second answer can be committed before it. Only a rebuild that
+        // restores more than one player's total is a lost copy that mattered. Counted after the script: one that
+        // threw didn't happen.
+        if (totals.size() > 1) {
+            rebuilds.increment();
+        }
     }
 
     /** Redis never stores an empty sorted set, so an empty reply means the key doesn't exist. */

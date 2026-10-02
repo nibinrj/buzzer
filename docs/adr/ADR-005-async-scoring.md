@@ -68,7 +68,7 @@ sequenceDiagram
 | Scoring failed 3 times | Postgres down or refusing for more than ~3 s | The score is **missing**. |
 | Scoring succeeded, `ScoreUpdated` failed 3 times | Kafka refusing the publish for more than ~3 s | The score is **fine**. Only a push was lost; the next answer's push or `GET /leaderboard` repairs it. |
 
-- **Detection:** the DLT handler counts `scoring.events.dead.lettered{topic}`, logs ids and exception types only (never the value or exception message, which can quote data), and acks.
+- **Detection:** the DLT handler counts `buzzer.scoring.events.dead.lettered{topic}`, logs ids and exception types only (never the value or exception message, which can quote data), and acks.
 - **Owner:** the service owner (nibin). Nothing reads a DLT automatically, so a record there is a problem until a human looks.
 - **Draining:** read the record's `kafka_original-topic` and `kafka_exception-*` headers, fix the cause, then replay the value to the original topic with the same key. Replaying is always safe: `processed_events` skips it if it was actually scored. Discard only a record that can never be valid, and write down why.
 - **Today** this is a manual `rpk` procedure. Phase O adds the alert (DLT > 0). A replay tool is a revisit item.

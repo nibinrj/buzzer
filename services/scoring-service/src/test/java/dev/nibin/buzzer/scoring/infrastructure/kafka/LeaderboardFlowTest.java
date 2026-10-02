@@ -4,6 +4,7 @@ import dev.nibin.buzzer.events.AnswerSubmitted;
 import dev.nibin.buzzer.events.EventHeaders;
 import dev.nibin.buzzer.events.ScoreUpdated;
 import dev.nibin.buzzer.scoring.ScoringIntegrationTest;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -29,6 +30,7 @@ import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Answers in, ScoreUpdated out, through real Redpanda, Postgres and Redis: AnswerSubmitted records are produced the
@@ -51,10 +53,15 @@ class LeaderboardFlowTest {
     @Autowired
     private StringRedisTemplate redis;
 
+    @Autowired
+    private MeterRegistry meters;
+
     private final UUID session = UUID.randomUUID();
 
     @Test
     void eachUpdateCarriesTheRankedTopWithARisingVersionAndPlayersOutsideTheTopPublishNothing() throws Exception {
+        double published = scoreUpdates("published");
+        double outsideTop = scoreUpdates("outside_top");
         List<UUID> players = IntStream.range(0, 11).mapToObj(i -> UUID.randomUUID()).toList();
         for (int i = 0; i < 10; i++) {
             send(answer(players.get(i), true, i + 1)); // correctRank 1..10: 1000, 900, ... 400, 300, 300, 300
@@ -72,10 +79,14 @@ class LeaderboardFlowTest {
         assertThat(last.top10()).extracting(ScoreUpdated.Entry::rank).containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 8, 8);
         assertThat(last.top10()).extracting(ScoreUpdated.Entry::playerId).doesNotContain(players.get(10));
         assertThat(last.top10().getFirst().playerId()).isEqualTo(players.get(0));
+        // buzzer.scoring.score.updates: 11 sent, 1 skipped (counted just after each send's broker ack, so await).
+        await().atMost(WAIT).until(() -> scoreUpdates("published") == published + 11);
+        assertThat(scoreUpdates("outside_top")).isEqualTo(outsideTop + 1);
     }
 
     @Test
     void aLostRedisLeaderboardIsRebuiltFromPostgresOnTheNextAnswer() throws Exception {
+        double rebuilds = meters.get("buzzer.scoring.leaderboard.rebuilds").counter().count();
         UUID ada = UUID.randomUUID();
         UUID bob = UUID.randomUUID();
         send(answer(ada, true, 1));
@@ -87,6 +98,11 @@ class LeaderboardFlowTest {
         ScoreUpdated second = readUntil(update -> update.version() == 2).getLast();
         assertThat(second.top10()).containsExactly(
                 new ScoreUpdated.Entry(1, ada, 1000), new ScoreUpdated.Entry(2, bob, 900)); // ada came from Postgres
+        assertThat(meters.get("buzzer.scoring.leaderboard.rebuilds").counter().count()).isEqualTo(rebuilds + 1);
+    }
+
+    private double scoreUpdates(String result) {
+        return meters.get(ScoringEventListener.SCORE_UPDATES).tag("result", result).counter().count();
     }
 
     private AnswerSubmitted answer(UUID player, boolean correct, int correctRank) {

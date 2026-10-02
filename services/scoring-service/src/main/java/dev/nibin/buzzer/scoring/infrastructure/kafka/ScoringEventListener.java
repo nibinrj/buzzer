@@ -10,6 +10,7 @@ import dev.nibin.buzzer.scoring.application.LogContext;
 import dev.nibin.buzzer.scoring.application.PublishLeaderboard;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.Header;
 import org.slf4j.Logger;
@@ -24,6 +25,12 @@ import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
+import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Consumes session-service's events and hands them to {@link ApplyScoringEvent}.
@@ -49,21 +56,56 @@ import java.nio.charset.StandardCharsets;
 public class ScoringEventListener {
 
     /** Records that reached a DLT: each one is a score or a lifecycle change that is missing until a human acts. */
-    public static final String DEAD_LETTERED = "scoring.events.dead.lettered";
+    public static final String DEAD_LETTERED = "buzzer.scoring.events.dead.lettered";
+    /** Every event read, by type and whether it was applied or already had been (a redelivery). */
+    public static final String EVENTS = "buzzer.scoring.events";
+    /** From the answer's acceptance (answeredAtMs) to its score being committed here. New answers only. */
+    public static final String DELAY = "buzzer.scoring.delay";
+    /** ScoreUpdated sent, or not because the player is outside the top 10. */
+    public static final String SCORE_UPDATES = "buzzer.scoring.score.updates";
 
     private static final Logger log = LoggerFactory.getLogger(ScoringEventListener.class);
+    private static final List<String> EVENT_TYPES = List.of(
+            AnswerSubmitted.class.getSimpleName(), SessionStarted.class.getSimpleName(),
+            SessionEnded.class.getSimpleName());
 
     private final EventReader reader;
     private final ApplyScoringEvent apply;
     private final PublishLeaderboard publishLeaderboard;
     private final MeterRegistry meters;
+    private final Map<String, Counter> events = new HashMap<>();
+    private final Map<PublishLeaderboard.Outcome, Counter> scoreUpdates =
+            new EnumMap<>(PublishLeaderboard.Outcome.class);
+    private final Timer scoringDelay;
 
+    /**
+     * Every series registered up front, at 0: a rate over a series that appears only on its first increment misses
+     * that first one, and a dashboard shows "no data" instead of 0.
+     */
     public ScoringEventListener(EventReader reader, ApplyScoringEvent apply, PublishLeaderboard publishLeaderboard,
             MeterRegistry meters) {
         this.reader = reader;
         this.apply = apply;
         this.publishLeaderboard = publishLeaderboard;
         this.meters = meters;
+        for (String type : EVENT_TYPES) {
+            for (boolean applied : new boolean[] {true, false}) {
+                events.put(eventKey(type, applied), Counter.builder(EVENTS)
+                        .description("Events read, applied or skipped as already applied")
+                        .tag("type", type)
+                        .tag("result", applied ? "applied" : "duplicate")
+                        .register(meters));
+            }
+        }
+        for (PublishLeaderboard.Outcome outcome : PublishLeaderboard.Outcome.values()) {
+            scoreUpdates.put(outcome, Counter.builder(SCORE_UPDATES)
+                    .description("ScoreUpdated sent, or skipped because the player is outside the top 10")
+                    .tag("result", outcome.name().toLowerCase(Locale.ROOT))
+                    .register(meters));
+        }
+        this.scoringDelay = Timer.builder(DELAY)
+                .description("Answer accepted (session-service, Redis clock) to score committed (here)")
+                .register(meters);
     }
 
     @RetryableTopic(
@@ -91,14 +133,17 @@ public class ScoringEventListener {
         boolean applied = switch (reader.read(record)) {
             case AnswerSubmitted event -> {
                 MDC.put(LogContext.PLAYER_ID, event.playerId().toString());
-                boolean scored = apply.answerSubmitted(event);
+                boolean scored = counted(event, apply.answerSubmitted(event));
+                if (scored) {
+                    recordDelay(event.answeredAtMs());
+                }
                 // After the commit, and ALSO for a redelivery (scored == false): if Redis or Kafka failed on an
                 // earlier attempt, this is the retry that repairs it. Both steps are safe to repeat.
-                publishLeaderboard.afterAnswer(event.sessionId(), event.playerId());
+                scoreUpdates.get(publishLeaderboard.afterAnswer(event.sessionId(), event.playerId())).increment();
                 yield scored;
             }
-            case SessionStarted event -> apply.sessionStarted(event);
-            case SessionEnded event -> apply.sessionEnded(event);
+            case SessionStarted event -> counted(event, apply.sessionStarted(event));
+            case SessionEnded event -> counted(event, apply.sessionEnded(event));
             default -> throw new IllegalStateException("EventReader returned an unexpected type");
         };
         if (!applied) {
@@ -106,6 +151,27 @@ public class ScoringEventListener {
                     record.partition(), record.offset());
         }
         ack.acknowledge(); // after the commit and the leaderboard above: never before
+    }
+
+    /**
+     * Counted right after its transaction, before the leaderboard step: if that step fails, the retry finds the event
+     * applied and counts a duplicate, so every event is counted as applied exactly once.
+     */
+    private boolean counted(Object event, boolean applied) {
+        events.get(eventKey(event.getClass().getSimpleName(), applied)).increment();
+        return applied;
+    }
+
+    /**
+     * answeredAtMs is Redis's clock when session-service accepted the answer; now is this JVM's. Two clocks, so the
+     * delay is off by their skew (milliseconds): negative values from that are recorded as 0.
+     */
+    private void recordDelay(long answeredAtMs) {
+        scoringDelay.record(Math.max(0, System.currentTimeMillis() - answeredAtMs), TimeUnit.MILLISECONDS);
+    }
+
+    private static String eventKey(String type, boolean applied) {
+        return type + "/" + (applied ? "applied" : "duplicate");
     }
 
     /**
