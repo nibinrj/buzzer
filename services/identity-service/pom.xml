@@ -98,6 +98,11 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <!-- The runnable fat jar is *-exec.jar. The plain jar stays this module's main artifact, so a module that
+                     depends on this one (benchmarks/) gets loadable classes: a fat jar keeps them under BOOT-INF/classes. -->
+                <configuration>
+                    <classifier>exec</classifier>
+                </configuration>
             </plugin>
         </plugins>
     </build>

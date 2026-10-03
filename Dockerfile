@@ -1,7 +1,7 @@
 # One image recipe for every service. The jar is built BEFORE this runs (.\tasks.ps1 images, later CI), so the
 # image never contains Maven, sources or tests, only a JRE and the app.
 #   docker build --platform linux/amd64 --build-arg SERVICE=quiz-service --build-arg REVISION=<git sha> -t buzzer/quiz-service:<git sha> .
-# The build context is the repo root; .dockerignore lets only services/*/target/*.jar through.
+# The build context is the repo root; .dockerignore lets only services/*/target/*-exec.jar through.
 
 # Multi-arch index digest: the same pin resolves to the amd64 image (kind) or the arm64 image (ECS, Phase 6.5).
 ARG JRE_IMAGE=eclipse-temurin:21.0.12.1_1-jre-noble@sha256:22138efd69393501fccd8176ae16b01791ed71ff801b28f0359415389b17c766
@@ -12,8 +12,9 @@ ARG JRE_IMAGE=eclipse-temurin:21.0.12.1_1-jre-noble@sha256:22138efd69393501fccd8
 FROM --platform=$BUILDPLATFORM ${JRE_IMAGE} AS extract
 ARG SERVICE
 WORKDIR /build
-# The glob matches only the repackaged jar: Boot's plugin renames the plain one to *.jar.original.
-COPY services/${SERVICE}/target/*.jar application.jar
+# The runnable fat jar has the "exec" classifier (each service's pom). The plain jar next to it holds only the
+# service's own classes, for benchmarks/ to depend on.
+COPY services/${SERVICE}/target/*-exec.jar application.jar
 # Boot 4's "tools" jar mode (Boot 2/3's "layertools" is gone). Without --launcher the result is a plain
 # application.jar plus lib/*.jar, spread over the four layer directories listed in BOOT-INF/layers.idx.
 RUN java -Djarmode=tools -jar application.jar extract --layers --destination extracted
