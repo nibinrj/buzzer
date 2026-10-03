@@ -32,8 +32,10 @@ answers acknowledged: 1,000 / 2,000 / 4,000 of 1,000 / 2,000 / 4,000.
 | **200** | **112 ms** | **266 ms** ✗ | 344 ms | 41 ms | 1.01 s | **2.37 s** ✗ | 3.30 s |
 
 ✗ = threshold crossed (ack p95 < 250 ms, push p95 < 2 s). `question_fanout` also crossed, but it isn't valid
-locally (two drifting clocks; see the B.2 study note). Two `stomp_errors` at 100 players weren't captured (k6
-printed them to stderr, which the run didn't keep); no service logged a WARN or ERROR during the ladder.
+locally (two drifting clocks; see the B.2 study note). The two `stomp_errors` at 100 players were identified in the
+H1 runs below, where stderr was kept: `socket error websocket: close 1002 (protocol error)` as players leave after
+the game ended. That's a closing race in the script (DISCONNECT, then close), not a server fault. No service logged a
+WARN or ERROR during the ladder.
 
 **What the servers saw (Prometheus, Jaeger):**
 
@@ -133,5 +135,34 @@ Expected gain: up to ~0.5 s of push latency. It doesn't help H2: a faster outbox
 H1 first: it's the player-facing break (ack p95 over 250 ms), and it's one environment variable. H3 next (two
 variables). H2 needs a design change to fix (more parallelism inside a session while keeping per-player order, or
 cheaper events), so measure it but fix it last.
+
+### Experiment H1: session-service pool 10 → 32 (2026-10-03)
+
+**Method.** One change, same session, same order for both variants: start session-service fresh, play a 50-player
+warm-up game (so the JIT has compiled the hot paths), then the measured 200-player game. Control with the default
+pool (10), then session-service restarted with `SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE=32` (Prometheus confirmed
+`hikaricp_connections_max` = 32). Everything else stayed up and unchanged.
+
+| 200 players | ack p50 | ack p95 | ack p99 | handling p50 / p95 | Hikari acquire avg | connection held avg | push p50 | push p95 | scoring delay p50 / p95 | outbox backlog (max sampled) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| pool 10 (control) | 88 ms | 233 ms | 332 ms | 59 / 137 ms | 10.8 ms | 5.0 ms | 890 ms | 1.91 s | 0.62 / 2.3 s | 0 |
+| **pool 32** | **51 ms** | **91 ms** | **105 ms** | 37 / 83 ms | **0.45 ms** | **9.0 ms** | 1.28 s | **3.46 s** ✗ | 1.88 / 4.7 s | 139 |
+
+**Verdict: H1 confirmed, and it isn't the whole story.**
+- **The pool was a limit.** The wait for a connection dropped from 10.8 ms to 0.45 ms, and the ack p95 more than
+  halved (233 → 91 ms).
+- **Postgres is the next limit behind it.** With 32 connections working at once, each was held almost twice as
+  long (5.0 → 9.0 ms), and all 32 were busy at one sample. Handling p50 fell to 37 ms, not back to the 19 ms seen
+  at 100 players. The queue moved from the pool into the database. That points at the real fix: an answer that
+  needs one connection instead of three (stop re-reading the session and the player). A bigger pool only trades a
+  wait in Java for contention in Postgres. In AWS it would also eat into a small RDS instance's connection limit,
+  shared by four databases (ADR-007).
+- **The queue moved downstream, as H2/H3 predicted.** Answers reached the outbox faster, so its backlog rose (0 →
+  139 sampled), scoring delay p50 tripled (0.62 → 1.88 s), and push p95 crossed its threshold (1.91 → 3.46 s).
+  Scoring applied the same ~43 events/s in both runs: it runs at a fixed rate, whatever arrives.
+
+**Run-to-run variance is large.** The control's numbers differ from the baseline run 40 minutes earlier at the same
+load: ack p95 233 vs 266 ms, scoring delay p50 0.62 vs 1.68 s. So compare only runs made in the same session, back to
+back, in the same order, and make one change at a time.
 
 <!-- B.3 fix batch: before/after table goes here. -->
