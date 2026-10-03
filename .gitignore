@@ -11,6 +11,8 @@ target/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+# Saved plans (terraform plan -out) can contain secret values in clear text.
+*.tfplan
 
 # IDE / OS
 .idea/
