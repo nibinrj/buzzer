@@ -30,6 +30,7 @@
         <module>services/session-service</module>
         <module>services/scoring-service</module>
         <module>services/gateway</module>
+        <module>benchmarks</module>
     </modules>
 
     <dependencyManagement>

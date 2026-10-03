@@ -13,13 +13,16 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'up', 'obs', 'down', 'nuke', 'build', 'test', 'run', 'health', 'logs', 'keys', 'images',
-        'kind-up', 'kind-obs', 'kind-down')]
+        'kind-up', 'kind-obs', 'kind-down', 'bench')]
     [string] $Task = 'help',
 
     [string] $Svc,
 
     # run only: log JSON lines (ECS), as in a container, instead of readable text.
-    [switch] $Json
+    [switch] $Json,
+
+    # bench only: a regular expression; runs only the benchmarks whose name matches (JMH's own filter).
+    [string] $Only
 )
 
 Set-StrictMode -Version Latest
@@ -107,6 +110,8 @@ Usage: .\tasks.ps1 <task> [-Svc <name>]
              App at http://127.0.0.1:8000
   kind-obs   Open the cluster's Grafana (127.0.0.1:3001) and Prometheus (127.0.0.1:9091) until Ctrl+C
   kind-down  Delete the kind cluster "buzzer" and ALL its data (compose's data is not touched)
+  bench    Build benchmarks\target\benchmarks.jar and run every JMH benchmark (~4 min; needs Docker for Redis).
+           One group only: .\tasks.ps1 bench -Only EventReader. JSON results: benchmarks\target\jmh-result.json
 '@
 }
 
@@ -443,6 +448,19 @@ try {
 
         # Deleting the cluster deletes its PVCs too: in-cluster data is dev scaffolding (K.1 §9).
         'kind-down' { Invoke-Native kind @('delete', 'cluster', '--name', $kindCluster) }
+
+        'bench' {
+            # -am builds the services' plain jars first (the classes under test). No tests: that's what build is for.
+            Invoke-Native $mvnw @('-q', '-pl', 'benchmarks', '-am', 'package', '-DskipTests')
+
+            # The JDK mvnw used (JAVA_HOME), not whichever java is first on PATH. JMH starts each fork with this JVM too.
+            $java = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME 'bin' 'java' } else { 'java' }
+            $resultFile = Join-Path 'benchmarks' 'target' 'jmh-result.json'
+            $benchArgs = @('-jar', (Join-Path 'benchmarks' 'target' 'benchmarks.jar'), '-rf', 'json', '-rff', $resultFile)
+            if ($Only) { $benchArgs += $Only }
+            Invoke-Native $java $benchArgs
+            Write-Host "Saved $resultFile (the table above is the same data). How to read it: docs\benchmarks.md" -ForegroundColor Green
+        }
     }
 }
 finally {
