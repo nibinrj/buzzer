@@ -1,0 +1,21 @@
+# The O.8 alert/recording rules and dashboards as ConfigMaps, for the kind cluster's Prometheus and Grafana
+# (infra/k8s/base/observability). Generated here, next to the files, because Kustomize only reads files inside its own
+# directory (the load restrictor, K.3): compose mounts these files and the cluster mounts these ConfigMaps, so there is
+# one copy of each rule and dashboard. This file sits outside every directory compose mounts.
+# What differs between the two (where the services are, the datasources) is NOT here: see infra/k8s/base/observability.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator:
+  - name: prometheus-rules
+    files:
+      - prometheus/rules/buzzer-alerts.yml
+      - prometheus/rules/buzzer-recording.yml
+  - name: grafana-dashboards
+    files:
+      - grafana/dashboards/buzzer-game.json
+      - grafana/dashboards/buzzer-service-red.json
+  # The provider: "every JSON in /var/lib/grafana/dashboards goes into the Buzzer folder". Same path in both setups.
+  - name: grafana-dashboard-provider
+    files:
+      - grafana/provisioning/dashboards/dashboards.yml

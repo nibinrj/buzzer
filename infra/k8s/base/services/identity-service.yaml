@@ -1,0 +1,142 @@
+# identity-service: register, login, tokens, JWKS. Reached only through the gateway (and by the other services for
+# the JWKS). The shape every service manifest shares is explained here once; the other four repeat it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-service
+  labels:
+    app.kubernetes.io/name: identity-service
+spec:
+  # ClusterIP (the default): a virtual IP that spreads connections over the ready pods. Never reachable from outside
+  # the cluster; only Traefik's Service is (overlays/kind).
+  selector:
+    app.kubernetes.io/name: identity-service
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+    # Not routed anywhere yet: Prometheus on the cluster is K.5 (deferred). Declared so nobody has to guess the port.
+    - name: management
+      port: 9081
+      targetPort: management
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-service
+  labels:
+    app.kubernetes.io/name: identity-service
+    app.kubernetes.io/component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: identity-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: identity-service
+        app.kubernetes.io/component: service
+    spec:
+      # Kubernetes would inject <SERVICE>_PORT=tcp://… for every Service in the namespace; a Service called "redis"
+      # turns into REDIS_PORT=tcp://10.96…, which Spring would read as our REDIS_PORT (K.1 gotcha 1).
+      enableServiceLinks: false
+      # The app never talks to the Kubernetes API: no token mounted for it to leak.
+      automountServiceAccountToken: false
+      # Longer than preStop (5 s) + Spring's graceful shutdown (30 s by default): Kubernetes only SIGKILLs after this.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001      # the image's "buzzer" user (Dockerfile, K.2)
+        runAsGroup: 10001
+        # Mounted volumes get this group: the key files (mode 0440 below) are then readable by the app, not by
+        # everyone.
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: identity-service
+          image: buzzer/identity-service   # tag set per environment (overlays/kind: "kind")
+          ports:
+            - name: http
+              containerPort: 8081
+            - name: management
+              containerPort: 9081
+          envFrom:
+            # The non-secret addresses every service may need (kustomization.yaml). A service ignores the ones its
+            # application.yml doesn't reference.
+            - configMapRef:
+                name: services-config
+          env:
+            # One key of the Secret, not the whole Secret: this pod gets its own database password and nothing else.
+            - name: IDENTITY_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: IDENTITY_DB_PASSWORD
+            # The signing keys, mounted as files below. Spring resource locations, as in .env.example.
+            - name: IDENTITY_JWT_PRIVATE_KEY_LOCATION
+              value: file:/run/secrets/jwt/jwt-private.pem
+            - name: IDENTITY_JWT_PUBLIC_KEY_LOCATION
+              value: file:/run/secrets/jwt/jwt-public.pem
+          # Three probes, three questions (K.1 §2), all on the service port (K.3b), never on the management port:
+          #   startup:   has the JVM finished starting? Holds the other two off until it has (up to 5 min here: seven
+          #              JVMs starting at once on a laptop share the CPU).
+          #   readiness: may it get traffic now? Failing takes the pod out of the Service; it isn't restarted.
+          #   liveness:  is it stuck? Failing restarts the container. /livez checks nothing outside the JVM, so a
+          #              database outage makes pods unready, never restarts them all.
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            # On delete, the pod is removed from the Service's endpoints at the same time as it gets SIGTERM, and
+            # Traefik/kube-proxy notice a moment later. Waiting 5 s first means no new request arrives at a server that
+            # has already stopped accepting. Native sleep action: no shell needed in the image.
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            # Memory request = limit: the scheduler reserves what the JVM may use, and the JVM sizes its heap from
+            # the limit (MaxRAMPercentage=60 in the Dockerfile: ~384 MB heap, ~256 MB for everything else).
+            # No CPU limit: a limit throttles the JVM (startup, GC) even when the node is idle; the request is
+            # what's guaranteed under contention.
+            requests:
+              cpu: 100m
+              memory: 640Mi
+            limits:
+              memory: 640Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: jwt-keys
+              mountPath: /run/secrets/jwt
+              readOnly: true
+            # The only place the app writes (Tomcat's work dir, JVM temp files): a scratch volume, gone with the pod.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: jwt-keys
+          secret:
+            # Created by .\tasks.ps1 kind-up from .secrets\, never stored in the repo.
+            secretName: identity-jwt
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}

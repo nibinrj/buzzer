@@ -1,0 +1,135 @@
+# Traefik v3.7.13: the cluster's front door (K.1 D1). It implements the Gateway API: it watches the Gateway and
+# HTTPRoute in gateway-api.yaml and routes accordingly. No Helm (K.1 D3): a ServiceAccount, the permissions from
+# Traefik's own docs, a Deployment and a Service.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik
+---
+# Copied from Traefik v3.7.13's docs (reference/dynamic-configuration/kubernetes-gateway-rbac.yml). Cluster-wide,
+# because GatewayClasses are cluster-scoped and Traefik lists namespaces. It reads Secrets and ConfigMaps for TLS
+# certificates; the provider is limited to the buzzer namespace below.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: buzzer-traefik-gateway
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list", "watch"]
+  # Only for pod attributes in OpenTelemetry data, which this setup doesn't export; kept to match Traefik's file.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["services", "secrets", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gatewayclasses", "gateways", "httproutes", "grpcroutes", "tcproutes", "tlsroutes",
+                "referencegrants", "backendtlspolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gatewayclasses/status", "gateways/status", "httproutes/status", "grpcroutes/status",
+                "tcproutes/status", "tlsroutes/status", "referencegrants/status", "backendtlspolicies/status"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: buzzer-traefik-gateway
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: buzzer-traefik-gateway
+subjects:
+  - kind: ServiceAccount
+    name: traefik
+    namespace: buzzer   # explicit: a namespace transformer doesn't reliably rewrite subjects
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  labels:
+    app.kubernetes.io/name: traefik
+spec:
+  # ClusterIP here; overlays/kind turns it into a NodePort on 30080, the port kind publishes as 127.0.0.1:8000.
+  selector:
+    app.kubernetes.io/name: traefik
+  ports:
+    - name: web
+      port: 8000
+      targetPort: web
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: edge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: traefik
+        app.kubernetes.io/component: edge
+    spec:
+      serviceAccountName: traefik   # Traefik DOES talk to the API (it watches routes): it needs this token
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: traefik
+          image: traefik:v3.7.13
+          args:
+            # One entry point for HTTP and WebSocket traffic. A Gateway listener must use the port of an entry point:
+            # gateway-api.yaml's listener is on 8000 too.
+            - --entryPoints.web.address=:8000
+            - --providers.kubernetesGateway=true
+            # Only routes in our namespace, even though the permissions above are cluster-wide.
+            - --providers.kubernetesGateway.namespaces=buzzer
+            # /ping on the internal "traefik" entry point (:8080), for the probes. The dashboard and API stay off.
+            - --ping=true
+            - --log.format=json
+            - --global.checkNewVersion=false
+            - --global.sendAnonymousUsage=false
+          ports:
+            - name: web
+              containerPort: 8000
+            - name: admin
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: admin
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: admin
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            # Request = limit (kind-config.yaml's accounting). Measured ~20 MiB.
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

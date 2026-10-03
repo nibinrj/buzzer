@@ -1,0 +1,103 @@
+# quiz-service: quiz authoring, and the internal snapshot session-service reads (/internal/**, which the gateway
+# never routes). Same shape as identity-service.yaml, where each setting is explained.
+apiVersion: v1
+kind: Service
+metadata:
+  name: quiz-service
+  labels:
+    app.kubernetes.io/name: quiz-service
+spec:
+  selector:
+    app.kubernetes.io/name: quiz-service
+  ports:
+    - name: http
+      port: 8082
+      targetPort: http
+    - name: management
+      port: 9082
+      targetPort: management
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quiz-service
+  labels:
+    app.kubernetes.io/name: quiz-service
+    app.kubernetes.io/component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: quiz-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: quiz-service
+        app.kubernetes.io/component: service
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: quiz-service
+          image: buzzer/quiz-service
+          ports:
+            - name: http
+              containerPort: 8082
+            - name: management
+              containerPort: 9082
+          envFrom:
+            - configMapRef:
+                name: services-config
+          env:
+            - name: QUIZ_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: QUIZ_DB_PASSWORD
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 640Mi
+            limits:
+              memory: 640Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

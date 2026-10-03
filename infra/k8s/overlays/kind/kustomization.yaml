@@ -1,6 +1,6 @@
 # The local kind cluster (the only overlay: AWS runs ECS, not Kubernetes). kind-specific settings go here so the
-# base stays environment-neutral: image tags, the Traefik NodePort and dev resource sizes from K.4 on.
-# Secrets are deliberately NOT generated here: .\tasks.ps1 kind-up builds them from .env (K.1 D4).
+# base stays environment-neutral: image tags, the Traefik NodePort, and what makes it fit the dev machine.
+# Secrets are deliberately NOT generated here: .\tasks.ps1 kind-up builds them from .env and .secrets\ (K.1 D4).
 #   kubectl kustomize infra/k8s/overlays/kind              # print what would be applied
 #   kubectl --context kind-buzzer apply -k infra/k8s/overlays/kind
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -8,3 +8,66 @@ kind: Kustomization
 
 resources:
   - ../../base
+
+# "kind": whatever .\tasks.ps1 images built last (it adds this tag next to the commit tag). The real commit is the
+# image's org.opencontainers.image.revision label. A moving tag is fine HERE because kind-up loads the images itself
+# and then restarts the Deployments; a registry-backed environment would use the immutable commit tag instead.
+images:
+  - name: buzzer/gateway
+    newTag: kind
+  - name: buzzer/identity-service
+    newTag: kind
+  - name: buzzer/quiz-service
+    newTag: kind
+  - name: buzzer/session-service
+    newTag: kind
+  - name: buzzer/scoring-service
+    newTag: kind
+
+# One copy of every service: the machine's memory goes to observability (Prometheus + Grafana) instead of extra
+# replicas. Each copy is a 640Mi JVM; pods total ~5.1 GiB against ~5.8 GiB allocatable on a 7.6 GB Docker VM
+# (kind-config.yaml's reservation). The base keeps K.1's counts (gateway 2, session 3, scoring 2).
+# What one copy gives up: a restart or deletion of any service is a short outage for it; the Redis relay across
+# session-service pods was proven with 2 in K.4 and isn't exercised day to day.
+replicas:
+  - name: gateway
+    count: 1
+  - name: session-service
+    count: 1
+  - name: scoring-service
+    count: 1
+
+patches:
+  # Traefik becomes reachable from Windows: NodePort 30080 is the node port kind-config.yaml publishes as
+  # 127.0.0.1:8000.
+  - target:
+      kind: Service
+      name: traefik
+    patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: traefik
+      spec:
+        type: NodePort
+        ports:
+          - name: web
+            port: 8000
+            targetPort: web
+            nodePort: 30080
+  # Rollouts without a surge: the default starts a NEW pod before stopping an old one, i.e. one extra 640 MiB JVM
+  # per Deployment during every restart. Here the old pod stops first. The cost: a single-pod Deployment is briefly
+  # unavailable while it restarts. Fine locally; never in production.
+  - target:
+      kind: Deployment
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: any
+      spec:
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxSurge: 0
+            maxUnavailable: 1

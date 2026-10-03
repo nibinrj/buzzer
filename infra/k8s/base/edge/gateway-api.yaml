@@ -1,0 +1,44 @@
+# The Gateway API objects (K.1 D1), the successor to Ingress. Three roles, three kinds:
+#   GatewayClass: which controller implements gateways (Traefik)          - ../gatewayclass.yaml, once per cluster
+#   Gateway:      a listener: "accept HTTP on port 8000"                  - the cluster operator's part
+#   HTTPRoute:    which paths go to which Service                          - the application's part
+# The CRDs that define these kinds (v1.6.1, the version Traefik v3.7.13 is built against) are installed by
+# .\tasks.ps1 kind-up before this file is applied.
+# "edge" names our Gateway object; "gateway" is the Spring Cloud Gateway Service it routes to.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: edge
+spec:
+  gatewayClassName: traefik
+  listeners:
+    - name: web
+      protocol: HTTP
+      port: 8000            # Traefik's "web" entry point (traefik.yaml)
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: buzzer-api
+spec:
+  parentRefs:
+    - name: edge
+  rules:
+    # Only what a browser needs. Actuator, /livez, /readyz and /internal are not routed: unreachable from outside
+    # even before the gateway's own rules. PathPrefix matches whole path segments: /ws and /ws/..., not /wsx.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+        - path:
+            type: PathPrefix
+            value: /ws            # the STOMP handshake; Traefik passes the WebSocket upgrade through
+        - path:
+            type: PathPrefix
+            value: /.well-known   # the JWKS
+      backendRefs:
+        - name: gateway
+          port: 8080

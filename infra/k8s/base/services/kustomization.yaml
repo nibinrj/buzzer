@@ -1,0 +1,43 @@
+# The five services. Environment-neutral: image TAGS, replica counts for a small machine and rollout settings come
+# from the overlay.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: buzzer
+
+resources:
+  - identity-service.yaml
+  - quiz-service.yaml
+  - session-service.yaml
+  - scoring-service.yaml
+  - gateway.yaml
+
+# Non-secret settings, by the names the services' application.yml files read (their ${...} placeholders). Every
+# address is a Service name in this namespace. Generated, so its name gets a hash of the content
+# (services-config-<hash>) and Kustomize rewrites every reference: changing a value here rolls the pods, which a
+# plain ConfigMap would not.
+configMapGenerator:
+  - name: services-config
+    literals:
+      - IDENTITY_DB_URL=jdbc:postgresql://postgres:5432/identity_db
+      - QUIZ_DB_URL=jdbc:postgresql://postgres:5432/quiz_db
+      - SESSION_DB_URL=jdbc:postgresql://postgres:5432/session_db
+      - SCORING_DB_URL=jdbc:postgresql://postgres:5432/scoring_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      # Any broker address works for the first contact; after that the client uses what Redpanda advertises
+      # (redpanda-0.redpanda.buzzer.svc.cluster.local, base/data/redpanda.yaml).
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
+      - IDENTITY_JWKS_URI=http://identity-service:8081/.well-known/jwks.json
+      # The gateway's routes.
+      - IDENTITY_URI=http://identity-service:8081
+      - QUIZ_URI=http://quiz-service:8082
+      - SESSION_URI=http://session-service:8083
+      - SCORING_URI=http://scoring-service:8084
+      # session-service's own client for quiz-service's internal snapshot (not through the gateway).
+      - QUIZ_SERVICE_URI=http://quiz-service:8082
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: buzzer
+    includeSelectors: false

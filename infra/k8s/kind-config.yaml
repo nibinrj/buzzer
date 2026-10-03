@@ -4,6 +4,20 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: buzzer            # kubectl context "kind-buzzer"; every tasks.ps1 command passes it explicitly
+# Make Kubernetes' memory accounting match the machine. kind's node reports the WHOLE Docker VM as its capacity, so
+# the scheduler would hand all of it to pods, with nothing left for the VM's kernel, Docker itself and the
+# Kubernetes system pods (~1.3 GB measured). In K.5 that overcommit got the entire node OOM-killed during a game.
+#   systemReserved: taken off the top: allocatable = capacity - systemReserved - the eviction threshold
+#   evictionHard:   the kubelet evicts pods before free memory reaches the kernel's OOM killer
+# With every pod's memory request = limit (the manifests), the scheduler's sum is the real worst case: a pod that
+# doesn't fit stays Pending instead of the node dying. Applied at cluster creation (kubeadm): recreate to change.
+kubeadmConfigPatches:
+  - |
+    kind: KubeletConfiguration
+    systemReserved:
+      memory: "1536Mi"
+    evictionHard:
+      memory.available: "256Mi"
 nodes:
   - role: control-plane
     # Kubernetes 1.37.0, the default of kind v0.33.0 (the latest stable kind). Pinned by digest so the cluster is
@@ -11,8 +25,10 @@ nodes:
     image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
     # The only way in from Windows: Docker publishes a port of the node container (K.1 §8). Fixed at create time;
     # changing it means deleting and recreating the cluster.
-    #   localhost:8000 -> node port 30080 -> Traefik (K.4) -> Spring Cloud Gateway
-    # listenAddress 127.0.0.1: reachable from this PC only, not from the LAN.
+    #   127.0.0.1:8000 -> node port 30080 -> Traefik (K.4) -> Spring Cloud Gateway
+    # listenAddress 127.0.0.1: reachable from this PC only, not from the LAN. IPv4 only, so use 127.0.0.1, not
+    # "localhost": Windows resolves localhost to ::1 first, finds nothing there, and PowerShell's web cmdlets wait
+    # ~2 s per request before falling back to IPv4 (measured in K.4: 2,081 ms vs 12 ms).
     extraPortMappings:
       - containerPort: 30080
         hostPort: 8000

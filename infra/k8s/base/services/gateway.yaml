@@ -1,0 +1,110 @@
+# gateway (Spring Cloud Gateway): the only service Traefik routes to. JWT check, rate limiting, CORS, routes to the
+# other four by their Service names (services-config). Same shape as identity-service.yaml, where each setting is
+# explained.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+spec:
+  selector:
+    app.kubernetes.io/name: gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: management
+      port: 9080
+      targetPort: management
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: service
+spec:
+  # K.1 D9: 2 for real use, so one can restart without an outage. overlays/kind runs 1 (memory budget).
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/component: service
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: buzzer/gateway
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 9080
+          envFrom:
+            - configMapRef:
+                name: services-config
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: REDIS_PASSWORD
+            # gateway.client-ip.trusted-proxies (Boot's relaxed binding: dots to underscores, dashes dropped).
+            # One proxy in front: Traefik, which appends the client it saw to X-Forwarded-For. Trusting exactly one
+            # hop means a client can't choose its own rate-limit bucket by sending that header itself.
+            - name: GATEWAY_CLIENTIP_TRUSTEDPROXIES
+              value: "1"
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 640Mi
+            limits:
+              memory: 640Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

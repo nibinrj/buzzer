@@ -13,7 +13,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'up', 'obs', 'down', 'nuke', 'build', 'test', 'run', 'health', 'logs', 'keys', 'images',
-        'kind-up', 'kind-down')]
+        'kind-up', 'kind-obs', 'kind-down')]
     [string] $Task = 'help',
 
     [string] $Svc,
@@ -101,8 +101,11 @@ Usage: .\tasks.ps1 <task> [-Svc <name>]
   health   GET /actuator/health on the management ports 9080-9084
   logs     Follow stack logs: .\tasks.ps1 logs [-Svc postgres]
   keys     Generate the RS256 JWT key pair into .secrets\ (never overwrites)
-  images   Package the jars (no tests) and build buzzer/<svc>:<git sha> for all five services (amd64, local only)
-  kind-up    Create the kind cluster "buzzer" (if missing), its Secrets from .env, and Postgres/Redis/Redpanda
+  images   Package the jars (no tests) and build buzzer/<svc>:<git sha> (+ :kind) for all five (amd64, local only)
+  kind-up    Create the kind cluster "buzzer" (if missing) and deploy everything: Secrets from .env and .secrets\,
+             Postgres/Redis/Redpanda, Traefik, the five services, Prometheus + Grafana. Run `images` first.
+             App at http://127.0.0.1:8000
+  kind-obs   Open the cluster's Grafana (127.0.0.1:3001) and Prometheus (127.0.0.1:9091) until Ctrl+C
   kind-down  Delete the kind cluster "buzzer" and ALL its data (compose's data is not touched)
 '@
 }
@@ -111,13 +114,40 @@ Usage: .\tasks.ps1 <task> [-Svc <name>]
 # (kubectl's "current context" may point anywhere).
 $kindCluster = 'buzzer'
 $kubeContext = "kind-$kindCluster"
+# The Gateway API CRDs, at the version Traefik v3.7.13 is built against (its go.mod: sigs.k8s.io/gateway-api v1.6.1).
+$gatewayApiVersion = 'v1.6.1'
+$gatewayApiCrds = "https://github.com/kubernetes-sigs/gateway-api/releases/download/$gatewayApiVersion/standard-install.yaml"
 
 # Creates or updates one Secret from .env values, without the values touching the disk or a command line:
 # the Secret is built here as JSON (valid YAML) and piped to kubectl over stdin.
 # --server-side: client-side apply would copy the whole object, values included, into the
 # kubectl.kubernetes.io/last-applied-configuration annotation, readable by anyone who can read the Secret's
 # metadata. Server-side apply records only which fields it owns, not their values.
-function Set-KindSecret([string] $Name, [hashtable] $DotEnv, [string[]] $Keys) {
+# A Secret whose keys are file names and whose values are file contents (identity-service's PEM keys), mounted into
+# a pod as files. Like Set-KindSecret: built in memory and sent to kubectl on stdin, never written to disk.
+function Set-KindFileSecret([string] $Name, [hashtable] $Files) {
+    $data = [ordered]@{}
+    foreach ($key in $Files.Keys | Sort-Object) {
+        if (-not (Test-Path -LiteralPath $Files[$key])) { Stop-Task "Secret ${Name}: $($Files[$key]) not found. Run .\tasks.ps1 keys first." }
+        $data[$key] = [Convert]::ToBase64String([IO.File]::ReadAllBytes($Files[$key]))
+    }
+    $secret = [ordered]@{
+        apiVersion = 'v1'
+        kind       = 'Secret'
+        type       = 'Opaque'
+        metadata   = [ordered]@{
+            name      = $Name
+            namespace = 'buzzer'
+            labels    = @{ 'app.kubernetes.io/part-of' = 'buzzer'; 'app.kubernetes.io/managed-by' = 'tasks.ps1' }
+        }
+        data       = $data
+    }
+    $secret | ConvertTo-Json -Depth 5 |
+        kubectl --context $kubeContext apply --server-side --field-manager=tasks-ps1 -f - | Out-Host
+    if ($LASTEXITCODE -ne 0) { Stop-Task "kubectl apply failed for Secret $Name" }
+}
+
+function Set-KindSecret([string] $Name, [hashtable] $DotEnv, [string[]] $Keys, [string] $Namespace = 'buzzer') {
     $missing = @($Keys | Where-Object { -not $DotEnv.ContainsKey($_) -or -not $DotEnv[$_] })
     if ($missing) { Stop-Task "Secret ${Name}: .env is missing $($missing -join ', ')" }
     $data = [ordered]@{}
@@ -131,7 +161,7 @@ function Set-KindSecret([string] $Name, [hashtable] $DotEnv, [string[]] $Keys) {
         type       = 'Opaque'
         metadata   = [ordered]@{
             name      = $Name
-            namespace = 'buzzer'
+            namespace = $Namespace
             labels    = @{ 'app.kubernetes.io/part-of' = 'buzzer'; 'app.kubernetes.io/managed-by' = 'tasks.ps1' }
         }
         data       = $data
@@ -274,7 +304,12 @@ try {
                     '--build-arg', "SERVICE=$service", '--build-arg', "REVISION=$tag",
                     '--tag', "buzzer/${service}:$tag", '.')
             }
-            Write-Host "Built buzzer/<service>:$tag for: $((Get-ChildItem 'services' -Directory).Name -join ', ')" -ForegroundColor Green
+            # Also tagged "kind": the tag overlays/kind deploys (a moving tag; the image's revision label keeps the
+            # commit). kind-up loads whatever carries it and restarts the services.
+            foreach ($service in (Get-ChildItem 'services' -Directory).Name) {
+                Invoke-Native docker @('tag', "buzzer/${service}:$tag", "buzzer/${service}:kind")
+            }
+            Write-Host "Built buzzer/<service>:$tag (+ :kind) for: $((Get-ChildItem 'services' -Directory).Name -join ', ')" -ForegroundColor Green
         }
 
         'kind-up' {
@@ -300,6 +335,26 @@ try {
             Set-KindSecret 'postgres-credentials' $dotEnv @('POSTGRES_USER', 'POSTGRES_PASSWORD',
                 'IDENTITY_DB_PASSWORD', 'QUIZ_DB_PASSWORD', 'SESSION_DB_PASSWORD', 'SCORING_DB_PASSWORD')
             Set-KindSecret 'redis-credentials' $dotEnv @('REDIS_PASSWORD')
+            # identity-service's signing keys: the files .\tasks.ps1 keys created, mounted into its pod as files.
+            Set-KindFileSecret 'identity-jwt' @{
+                'jwt-private.pem' = (Join-Path $PSScriptRoot '.secrets' 'jwt-private.pem')
+                'jwt-public.pem'  = (Join-Path $PSScriptRoot '.secrets' 'jwt-public.pem')
+            }
+            # Grafana's admin password, the same .env value compose's Grafana uses.
+            Set-KindSecret 'grafana-admin' $dotEnv @('GRAFANA_ADMIN_PASSWORD') 'observability'
+
+            # The Gateway API kinds (GatewayClass, Gateway, HTTPRoute) must exist before anything uses them.
+            # Downloaded only when missing or at another version (the CRDs carry their bundle version), so a re-run
+            # doesn't need the internet. Server-side apply: these CRDs are too large for the annotation client-side
+            # apply keeps.
+            $installed = & kubectl --context $kubeContext get crd gateways.gateway.networking.k8s.io `
+                -o 'jsonpath={.metadata.annotations.gateway\.networking\.k8s\.io/bundle-version}' 2>$null
+            if ($installed -ne $gatewayApiVersion) {
+                Invoke-Native kubectl @('--context', $kubeContext, 'apply', '--server-side', '-f', $gatewayApiCrds)
+            }
+            Invoke-Native kubectl @('--context', $kubeContext, 'wait', '--for=condition=Established',
+                'crd/gatewayclasses.gateway.networking.k8s.io', 'crd/gateways.gateway.networking.k8s.io',
+                'crd/httproutes.gateway.networking.k8s.io', '--timeout=60s')
 
             # Images come from this PC's Docker, not from a download inside the node: `kind load` copies each one
             # into the node's containerd. Docker Desktop already has them (compose, .\tasks.ps1 images), and the node
@@ -311,10 +366,16 @@ try {
                 ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique
             foreach ($image in $images) {
                 & docker image inspect $image *> $null
-                if ($LASTEXITCODE -ne 0) { Invoke-Native docker @('pull', $image) }
+                if ($LASTEXITCODE -ne 0) {
+                    # Our own images exist only on this PC: there is nothing to pull.
+                    if ($image -like 'buzzer/*') { Stop-Task "$image not found. Build the images first: .\tasks.ps1 images" }
+                    Invoke-Native docker @('pull', $image)
+                }
                 Invoke-Native kind @('load', 'docker-image', $image, '--name', $kindCluster)
             }
 
+            # Were the services already deployed? Then they need a restart below to pick up the images just loaded.
+            $existing = & kubectl --context $kubeContext -n buzzer get deployment --selector 'app.kubernetes.io/component=service' -o name 2>$null
             Invoke-Native kubectl @('--context', $kubeContext, 'apply', '-k', 'infra/k8s/overlays/kind')
 
             # rollout status waits for the pods to exist AND be ready (kubectl wait fails if the StatefulSet
@@ -323,8 +384,61 @@ try {
                 Invoke-Native kubectl @('--context', $kubeContext, '-n', 'buzzer', 'rollout', 'status',
                     "statefulset/$statefulSet", '--timeout=300s')
             }
-            Invoke-Native kubectl @('--context', $kubeContext, '-n', 'buzzer', 'get', 'pods,pvc')
-            Write-Host "Cluster '$kindCluster' is up (context $kubeContext). Data layer ready." -ForegroundColor Green
+
+            # Already-running services are restarted: the "kind" tag may now point at a newer image (just loaded),
+            # and a pod only picks it up when it starts. NOT on the first deploy: those pods are brand new, and
+            # restarting them while they start would briefly reserve memory for both generations (the scheduler
+            # counts a terminating pod until it's gone). On a fresh cluster a service may start before Postgres, fail
+            # and be restarted by Kubernetes after a back-off; the wait below allows for that.
+            if ($existing) {
+                Invoke-Native kubectl @('--context', $kubeContext, '-n', 'buzzer', 'rollout', 'restart', 'deployment',
+                    '--selector', 'app.kubernetes.io/component=service')
+            }
+            $deployments = 'traefik', 'identity-service', 'quiz-service', 'session-service', 'scoring-service', 'gateway'
+            foreach ($deployment in $deployments) {
+                # Up to 10 min: seven JVMs start at once on one machine.
+                Invoke-Native kubectl @('--context', $kubeContext, '-n', 'buzzer', 'rollout', 'status',
+                    "deployment/$deployment", '--timeout=600s')
+            }
+            foreach ($deployment in 'prometheus', 'grafana') {
+                Invoke-Native kubectl @('--context', $kubeContext, '-n', 'observability', 'rollout', 'status',
+                    "deployment/$deployment", '--timeout=300s')
+            }
+            Invoke-Native kubectl @('--context', $kubeContext, 'get', 'pods', '-n', 'buzzer')
+            Invoke-Native kubectl @('--context', $kubeContext, 'get', 'pods', '-n', 'observability')
+            Write-Host 'Dashboards: .\tasks.ps1 kind-obs'
+            # 127.0.0.1, not localhost: the port is published on IPv4 only, and localhost tries ::1 first (kind-config.yaml).
+            Write-Host "Cluster '$kindCluster' is up (context $kubeContext): http://127.0.0.1:8000 (test client Base URL)" -ForegroundColor Green
+        }
+
+        'kind-obs' {
+            # The cluster's Prometheus and Grafana are deliberately not routed by Traefik: that would make them
+            # public. kubectl port-forward tunnels through the API server to their Services, on this PC only, for as
+            # long as this task runs. Ports 9091/3001, not compose's 9090/3000, so the two stacks can't be mixed up.
+            $forwards = @(
+                @{ Name = 'prometheus'; Port = 9091; Target = 9090 },
+                @{ Name = 'grafana'; Port = 3001; Target = 3000 })
+            $jobs = foreach ($forward in $forwards) {
+                Start-Job -Name "kind-obs-$($forward.Name)" -ArgumentList $kubeContext, $forward.Name, $forward.Port, $forward.Target -ScriptBlock {
+                    param($context, $name, $port, $target)
+                    kubectl --context $context -n observability port-forward "service/$name" "${port}:$target" --address 127.0.0.1
+                }
+            }
+            try {
+                Start-Sleep -Seconds 3
+                Write-Host 'Grafana     http://127.0.0.1:3001 (admin / GRAFANA_ADMIN_PASSWORD)'
+                Write-Host 'Prometheus  http://127.0.0.1:9091/targets'
+                foreach ($url in 'http://127.0.0.1:3001', 'http://127.0.0.1:9091/targets') { Start-Process $url }
+                Write-Host 'Forwarding until Ctrl+C.'
+                # A forward is tied to the one pod it picked: it ends when that pod is replaced. Say so instead of
+                # leaving a dead tunnel behind.
+                Wait-Job -Job $jobs -Any | Out-Null
+                $jobs | Receive-Job
+                Write-Host 'A port-forward stopped (its pod was replaced?). Run .\tasks.ps1 kind-obs again.' -ForegroundColor Yellow
+            }
+            finally {
+                $jobs | Stop-Job -PassThru | Remove-Job -Force
+            }
         }
 
         # Deleting the cluster deletes its PVCs too: in-cluster data is dev scaffolding (K.1 §9).

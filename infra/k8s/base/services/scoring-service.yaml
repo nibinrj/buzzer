@@ -1,0 +1,113 @@
+# scoring-service: the Kafka consumer, the Redis leaderboard, the results API. Two pods share the consumer group
+# "scoring-service": Kafka gives each some of the 3 partitions, and when one pod dies the other takes its partitions
+# over from the last committed offsets (ADR-005). Same shape as identity-service.yaml, where each setting is explained.
+apiVersion: v1
+kind: Service
+metadata:
+  name: scoring-service
+  labels:
+    app.kubernetes.io/name: scoring-service
+spec:
+  selector:
+    app.kubernetes.io/name: scoring-service
+  ports:
+    - name: http
+      port: 8084
+      targetPort: http
+    - name: management
+      port: 9084
+      targetPort: management
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scoring-service
+  labels:
+    app.kubernetes.io/name: scoring-service
+    app.kubernetes.io/component: service
+spec:
+  # 2: a consumer group hand-over (K.6). More than 3 would leave pods idle: 3 partitions per topic. overlays/kind runs
+  # 1 (memory); a single consumer recovers by itself after a kill (Phase 5).
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scoring-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scoring-service
+        app.kubernetes.io/component: service
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      # Graceful shutdown stops the listener containers, which commit their offsets: a clean hand-over, unlike the
+      # SIGKILL K.6 also tries.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: scoring-service
+          image: buzzer/scoring-service
+          ports:
+            - name: http
+              containerPort: 8084
+            - name: management
+              containerPort: 9084
+          envFrom:
+            - configMapRef:
+                name: services-config
+          env:
+            - name: SCORING_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: SCORING_DB_PASSWORD
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: REDIS_PASSWORD
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 640Mi
+            limits:
+              memory: 640Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

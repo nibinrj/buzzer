@@ -74,9 +74,11 @@ spec:
             periodSeconds: 10
             failureThreshold: 6
           resources:
+            # Request = limit: the scheduler reserves the worst case (kind-config.yaml's accounting). Measured ~133
+            # MiB idle; ~60 pooled connections (Hikari, every service pod) each cost memory under load.
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 512Mi
             limits:
               memory: 512Mi
           volumeMounts:

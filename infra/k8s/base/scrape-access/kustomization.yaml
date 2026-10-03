@@ -1,0 +1,14 @@
+# The permission objects live in the namespace they grant access TO (buzzer), so they can't sit in observability/,
+# whose kustomization moves everything into "observability".
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: buzzer
+
+resources:
+  - rbac.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: buzzer
+    includeSelectors: false

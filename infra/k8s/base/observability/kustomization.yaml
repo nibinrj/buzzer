@@ -1,0 +1,25 @@
+# Observability on the cluster, trimmed to fit the machine (K.5): Prometheus + Grafana with the O.8 rules and
+# dashboards. No Jaeger (the services export no traces here), no Loki (logs: kubectl logs).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: observability
+
+resources:
+  - ../../../local/observability   # the O.8 rules and dashboards, as ConfigMaps (one copy, shared with compose)
+  - prometheus.yaml
+  - grafana.yaml
+
+# The parts that differ from compose: where the targets are, and which datasources exist.
+configMapGenerator:
+  - name: prometheus-config
+    files:
+      - prometheus.yml
+  - name: grafana-datasources
+    files:
+      - datasources.yml=grafana-datasources.yml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: buzzer
+    includeSelectors: false

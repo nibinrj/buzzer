@@ -72,9 +72,10 @@ spec:
             periodSeconds: 10
             failureThreshold: 6
           resources:
+            # Request = limit (kind-config.yaml's accounting). Measured ~5 MiB: live state for a few games is tiny.
             requests:
               cpu: 50m
-              memory: 64Mi
+              memory: 128Mi
             limits:
               memory: 128Mi
           volumeMounts:

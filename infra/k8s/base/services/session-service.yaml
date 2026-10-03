@@ -1,0 +1,113 @@
+# session-service: sessions, the STOMP WebSocket endpoint, the buzz race, the outbox. Several pods are safe: the
+# Redis relay (3.4c) delivers every broadcast to the clients of every pod, and Redis orders the answers (ADR-004).
+# Same shape as identity-service.yaml, where each setting is explained.
+apiVersion: v1
+kind: Service
+metadata:
+  name: session-service
+  labels:
+    app.kubernetes.io/name: session-service
+spec:
+  selector:
+    app.kubernetes.io/name: session-service
+  ports:
+    - name: http
+      port: 8083
+      targetPort: http
+    - name: management
+      port: 9083
+      targetPort: management
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: session-service
+  labels:
+    app.kubernetes.io/name: session-service
+    app.kubernetes.io/component: service
+spec:
+  # K.1 D9: 3 for real use. overlays/kind runs 1 (the machine's memory goes to observability); K.4 proved the relay
+  # with 2.
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: session-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: session-service
+        app.kubernetes.io/component: service
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      # WebSockets: on delete, open connections are closed and players reconnect to another pod (ADR-003). The
+      # grace period gives Spring time to finish in-flight frames and the outbox publisher its current run.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: session-service
+          image: buzzer/session-service
+          ports:
+            - name: http
+              containerPort: 8083
+            - name: management
+              containerPort: 9083
+          envFrom:
+            - configMapRef:
+                name: services-config
+          env:
+            - name: SESSION_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: SESSION_DB_PASSWORD
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: REDIS_PASSWORD
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 640Mi
+            limits:
+              memory: 640Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

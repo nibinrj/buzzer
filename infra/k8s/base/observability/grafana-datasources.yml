@@ -1,0 +1,12 @@
+# Grafana's datasources on the kind cluster. Same uid as compose's ("prometheus"), which the O.8 dashboards refer
+# to, and the same URL works: Prometheus's Service is also called "prometheus", in this namespace. Unlike compose:
+# no Jaeger datasource and no exemplar links, because no traces are collected on the cluster.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true

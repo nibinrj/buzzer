@@ -1,0 +1,24 @@
+# What Prometheus (namespace observability) may do in namespace buzzer: discover the pods it scrapes. A Role, not a
+# ClusterRole: it can't see any other namespace, and it can't read Secrets or ConfigMaps at all.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-discovery
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-discovery
+subjects:
+  # Across namespaces: a RoleBinding in buzzer can grant to a ServiceAccount that lives in observability.
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: observability
