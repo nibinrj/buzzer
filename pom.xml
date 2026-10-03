@@ -47,6 +47,13 @@
                 <artifactId>shared-events</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <!-- Security override: spring-cloud-starter 5.0.2 (Spring Cloud 2025.1.2) brings in 1.81.1, which has
+                 CVE-2026-8763 (CRITICAL, fixed in 1.85). Remove once the Spring Cloud BOM manages 1.85 or newer. -->
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>1.85.2</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
