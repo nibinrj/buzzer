@@ -13,7 +13,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'up', 'obs', 'down', 'nuke', 'build', 'test', 'run', 'health', 'logs', 'keys', 'images',
-        'kind-up', 'kind-obs', 'kind-down', 'bench')]
+        'kind-up', 'kind-obs', 'kind-down', 'bench', 'push')]
     [string] $Task = 'help',
 
     [string] $Svc,
@@ -22,7 +22,11 @@ param(
     [switch] $Json,
 
     # bench only: a regular expression; runs only the benchmarks whose name matches (JMH's own filter).
-    [string] $Only
+    [string] $Only,
+
+    # push only: the CPU the ECS tasks run on. arm64 matches envs/dev's default cpu_architecture (ARM64).
+    [ValidateSet('arm64', 'amd64')]
+    [string] $Arch = 'arm64'
 )
 
 Set-StrictMode -Version Latest
@@ -112,6 +116,8 @@ Usage: .\tasks.ps1 <task> [-Svc <name>]
   kind-down  Delete the kind cluster "buzzer" and ALL its data (compose's data is not touched)
   bench    Build benchmarks\target\benchmarks.jar and run every JMH benchmark (~4 min; needs Docker for Redis).
            One group only: .\tasks.ps1 bench -Only EventReader. JSON results: benchmarks\target\jmh-result.json
+  push     Build the ECS images (linux/arm64; -Arch amd64 for X86_64 tasks), tagged with the commit and named for the
+           bootstrap's ECR repositories. Prints the ECR login, docker push and terraform apply commands; never pushes.
 '@
 }
 
@@ -303,7 +309,7 @@ try {
             if ($LASTEXITCODE -ne 0) { Stop-Task 'git rev-parse failed: images are tagged with the commit id.' }
             $tag = if (& git status --porcelain) { "$revision-dirty" } else { $revision }
 
-            # amd64 only: kind runs amd64 here. The arm64 build for ECS needs a registry push.
+            # amd64 only: kind runs amd64 here. The images for ECS are built by the push task.
             foreach ($service in (Get-ChildItem 'services' -Directory).Name) {
                 Invoke-Native docker @('build', '--platform', 'linux/amd64',
                     '--build-arg', "SERVICE=$service", '--build-arg', "REVISION=$tag",
@@ -315,6 +321,49 @@ try {
                 Invoke-Native docker @('tag', "buzzer/${service}:$tag", "buzzer/${service}:kind")
             }
             Write-Host "Built buzzer/<service>:$tag (+ :kind) for: $((Get-ChildItem 'services' -Directory).Name -join ', ')" -ForegroundColor Green
+        }
+
+        'push' {
+            # Images for ECS: built for the CPU the task definitions ask for, tagged with the commit, named for the
+            # bootstrap's ECR repositories. This task only builds and tags. Logging in, pushing and deploying are
+            # printed for you to run (Claude never pushes or applies).
+            if (& git status --porcelain) {
+                Stop-Task 'push needs a clean working tree: ECR tags are immutable and must name a commit. Commit first.'
+            }
+            $tag = & git rev-parse --short HEAD
+            if ($LASTEXITCODE -ne 0) { Stop-Task 'git rev-parse failed: images are tagged with the commit id.' }
+
+            # Registry and region come from the bootstrap's local state, so no account id is written in the repo.
+            $bootstrap = Join-Path 'infra' 'terraform' 'bootstrap'
+            $registry = & terraform "-chdir=$bootstrap" output -raw ecr_registry 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $registry) {
+                Stop-Task "No outputs from $bootstrap. Apply the bootstrap first: terraform -chdir=$bootstrap apply"
+            }
+            $region = & terraform "-chdir=$bootstrap" output -raw region
+
+            # Jars first, on the host (no tests: that's what build and CI are for).
+            Invoke-Native $mvnw @('-q', '-DskipTests', 'package')
+
+            # On this amd64 PC, an arm64 image is built under QEMU emulation (Docker Desktop includes it). That's cheap
+            # here because the slow work doesn't run emulated: the jar is built on the host, and the Dockerfile's
+            # extract stage runs on the build platform ($BUILDPLATFORM). Only the final stage's one RUN (creating user
+            # 10001) executes as arm64. --load keeps the image locally, for docker push.
+            $services = (Get-ChildItem 'services' -Directory).Name
+            foreach ($service in $services) {
+                Invoke-Native docker @('buildx', 'build', '--platform', "linux/$Arch", '--load',
+                    '--build-arg', "SERVICE=$service", '--build-arg', "REVISION=$tag",
+                    '--tag', "$registry/buzzer/${service}:$tag", '.')
+            }
+
+            $cpuArchitecture = if ($Arch -eq 'arm64') { 'ARM64' } else { 'X86_64' }
+            Write-Host "Built $($services.Count) images for linux/$Arch, tagged $tag." -ForegroundColor Green
+            Write-Host 'Now you run (log in to ECR, push, deploy):' -ForegroundColor Yellow
+            # The ECR password goes through a pipe into --password-stdin: never on a command line or in history.
+            Write-Host "  aws ecr get-login-password --region $region | docker login --username AWS --password-stdin $registry"
+            foreach ($service in $services) {
+                Write-Host "  docker push $registry/buzzer/${service}:$tag"
+            }
+            Write-Host "  terraform -chdir=infra/terraform/envs/dev apply -var image_tag=$tag -var cpu_architecture=$cpuArchitecture"
         }
 
         'kind-up' {
