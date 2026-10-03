@@ -4,13 +4,13 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
-# Recording and alert rules (O.8). An empty folder is fine.
+# Recording and alert rules. An empty folder is fine.
 rule_files:
   - /etc/prometheus/rules/*.yml
 
 scrape_configs:
   # The five services run on the host (.\tasks.ps1 run), so Prometheus reaches them through host.docker.internal
-  # (docker-compose.yml maps it on Linux too). Their management ports (O.3), never the public ones.
+  # (docker-compose.yml maps it on Linux too). Their management ports, never the public ones.
   # Prometheus adds job and instance (host:port) itself; the services add application.
   - job_name: buzzer
     metrics_path: /actuator/prometheus
@@ -25,7 +25,7 @@ scrape_configs:
   # Redpanda's own metrics, from inside the compose network (its admin port 9644 isn't published). The broker side
   # of consumer lag: redpanda_kafka_max_offset (each partition's end) minus
   # redpanda_kafka_consumer_group_committed_offset (each group's position). Unlike the consumer's own lag metric, it
-  # keeps rising while scoring-service is down. O.8 turns the difference into a rule and an alert.
+  # keeps rising while scoring-service is down. A recording rule turns the difference into a rule and an alert.
   - job_name: redpanda
     metrics_path: /public_metrics
     static_configs:

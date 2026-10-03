@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * submit_answer.lua against a real Redis 7, one outcome at a time. Every test uses a new session id. The question
  * is opened the way the game opens it (LiveStateRepository.showQuestion), with a deadline by Redis's clock.
- * Many answers at once is batch 4.4's SubmitAnswerConcurrencyTest.
+ * Many answers at once: SubmitAnswerConcurrencyTest.
  */
 @ApiIntegrationTest
 class RedisAnswerRegistryTest {
@@ -119,7 +119,7 @@ class RedisAnswerRegistryTest {
 
     @Test
     void aQuestionWithoutTheOpenFlagCountsAsClosed() {
-        // State as written before batch 4.2: pointer and deadline, no questionOpen.
+        // State as an older version wrote it: pointer and deadline, no questionOpen.
         redis.opsForHash().putAll(SessionKeys.state(sessionId), Map.of("status", "IN_PROGRESS",
                 "questionIndex", "0", "questionDeadline", String.valueOf(inThirtySeconds().toEpochMilli())));
 

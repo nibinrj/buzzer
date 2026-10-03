@@ -1,4 +1,4 @@
-# Dev-only Postgres 16 (in AWS this is RDS, Phase 7). Same image and init SQL as docker-compose.
+# Dev-only Postgres 16 (in AWS this is RDS). Same image and init SQL as docker-compose.
 # The four per-service databases and roles are created by 01-databases.sql on the FIRST start of an empty volume
 # only; changing a password in .env later needs .\tasks.ps1 kind-down + kind-up (like `docker compose down -v`).
 apiVersion: v1
@@ -36,7 +36,7 @@ spec:
         app.kubernetes.io/name: postgres
         app.kubernetes.io/component: database
     spec:
-      # Kubernetes would inject POSTGRES_PORT=tcp://… for the Service above (K.1 gotcha 1). Off on every pod.
+      # Kubernetes would inject POSTGRES_PORT=tcp://… for the Service above. Off on every pod.
       enableServiceLinks: false
       securityContext:
         # The image's "postgres" user. Running as it from the start (instead of root + gosu) works because the

@@ -1,0 +1,107 @@
+# CI: build and test everything on Linux, scan the whole history for leaked secrets, build the five service images
+# and scan them for vulnerabilities. On every pull request and every push to main.
+#
+# No AWS access and no secrets, so it is safe to run for pull requests from forks of this public repository.
+# Every third-party step is pinned so a moved tag can't change what runs: actions by commit SHA, container images by
+# digest (the readable version is in the comment / the tag before the @).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# The workflow's token can only read the repository.
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request cancels the run still going for the older one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+  TRIVY_IMAGE: aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+
+jobs:
+  build:
+    name: Build, test, images
+    # Linux on purpose: Windows runners can't run Linux containers, so Testcontainers wouldn't work there.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # All modules, all tests. Testcontainers starts Postgres, Redis and Redpanda on the runner's Docker.
+      # -ntp: no download progress lines in the log.
+      - name: Build and test
+        run: ./mvnw -B -ntp verify
+
+      # Test reports, only when something failed: the log alone rarely says enough.
+      - name: Keep test reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-reports
+          path: |
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # The same Dockerfile as .\tasks.ps1 images, one image per directory under services/. Tagged with the commit,
+      # never pushed anywhere (deploying is a later workflow).
+      - name: Build images
+        run: |
+          for service in $(ls services); do
+            docker build --platform linux/amd64 \
+              --build-arg SERVICE="$service" --build-arg REVISION="${GITHUB_SHA::7}" \
+              --tag "buzzer/$service:${GITHUB_SHA::7}" .
+          done
+
+      # Fails on CRITICAL vulnerabilities that have a fixed version (--ignore-unfixed): those are the ones a
+      # dependency or base-image update can actually remove. Every image is scanned before the step fails, so one
+      # run lists them all. The vulnerability database is downloaded once into a volume and shared by the scans.
+      - name: Scan images
+        run: |
+          status=0
+          for service in $(ls services); do
+            echo "::group::$service"
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v trivy-cache:/root/.cache \
+              "$TRIVY_IMAGE" image --no-progress --severity CRITICAL --ignore-unfixed --exit-code 1 \
+              "buzzer/$service:${GITHUB_SHA::7}" || status=1
+            echo "::endgroup::"
+          done
+          exit $status
+
+  secrets:
+    name: Secret scan (whole history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # fetch-depth 0: every commit, not just the last one. A secret deleted in a later commit is still in history.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # --redact: a finding shows file, commit and rule, never the secret itself (this log is public).
+      # safe.directory: git refuses a repository owned by another user (the runner's checkout, seen from inside
+      # the container) unless told it's trusted. Set through environment variables, so no config file is written.
+      - name: gitleaks
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo" \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
+            "$GITLEAKS_IMAGE" git --redact --no-banner /repo

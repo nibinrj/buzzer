@@ -15,7 +15,7 @@ spec:
     - name: http
       port: 8081
       targetPort: http
-    # Not routed anywhere yet: Prometheus on the cluster is K.5 (deferred). Declared so nobody has to guess the port.
+    # Not routed anywhere: only Prometheus scrapes it. Declared so nobody has to guess the port.
     - name: management
       port: 9081
       targetPort: management
@@ -39,7 +39,7 @@ spec:
         app.kubernetes.io/component: service
     spec:
       # Kubernetes would inject <SERVICE>_PORT=tcp://… for every Service in the namespace; a Service called "redis"
-      # turns into REDIS_PORT=tcp://10.96…, which Spring would read as our REDIS_PORT (K.1 gotcha 1).
+      # turns into REDIS_PORT=tcp://10.96…, which Spring would read as our REDIS_PORT.
       enableServiceLinks: false
       # The app never talks to the Kubernetes API: no token mounted for it to leak.
       automountServiceAccountToken: false
@@ -47,7 +47,7 @@ spec:
       terminationGracePeriodSeconds: 45
       securityContext:
         runAsNonRoot: true
-        runAsUser: 10001      # the image's "buzzer" user (Dockerfile, K.2)
+        runAsUser: 10001      # the image's "buzzer" user (Dockerfile)
         runAsGroup: 10001
         # Mounted volumes get this group: the key files (mode 0440 below) are then readable by the app, not by
         # everyone.
@@ -79,7 +79,7 @@ spec:
               value: file:/run/secrets/jwt/jwt-private.pem
             - name: IDENTITY_JWT_PUBLIC_KEY_LOCATION
               value: file:/run/secrets/jwt/jwt-public.pem
-          # Three probes, three questions (K.1 §2), all on the service port (K.3b), never on the management port:
+          # Three probes, three questions, all on the service port, never on the management port:
           #   startup:   has the JVM finished starting? Holds the other two off until it has (up to 5 min here: seven
           #              JVMs starting at once on a laptop share the CPU).
           #   readiness: may it get traffic now? Failing takes the pod out of the Service; it isn't restarted.

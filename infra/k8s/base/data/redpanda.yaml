@@ -1,4 +1,4 @@
-# Dev-only Redpanda, Kafka-compatible (in AWS this is MSK, Phase 7). Same image as compose.
+# Dev-only Redpanda, Kafka-compatible (in AWS this is MSK). Same image as compose.
 apiVersion: v1
 kind: Service
 metadata:

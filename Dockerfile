@@ -3,7 +3,7 @@
 #   docker build --platform linux/amd64 --build-arg SERVICE=quiz-service --build-arg REVISION=<git sha> -t buzzer/quiz-service:<git sha> .
 # The build context is the repo root; .dockerignore lets only services/*/target/*-exec.jar through.
 
-# Multi-arch index digest: the same pin resolves to the amd64 image (kind) or the arm64 image (ECS, Phase 6.5).
+# Multi-arch index digest: the same pin resolves to the amd64 image (kind) or the arm64 image (AWS ECS).
 ARG JRE_IMAGE=eclipse-temurin:21.0.12.1_1-jre-noble@sha256:22138efd69393501fccd8176ae16b01791ed71ff801b28f0359415389b17c766
 
 # --- Stage 1: split the fat jar into Boot's layers --------------------------------------------------------------
@@ -45,7 +45,7 @@ COPY --from=extract /build/extracted/application/ ./
 USER 10001:10001
 
 # Exec form: java is PID 1 and receives SIGTERM directly, so Boot's graceful shutdown runs (a shell would swallow it).
-#   MaxRAMPercentage=60   heap = 60% of the container memory limit; the rest is metaspace, threads, buffers (K.1 §7)
+#   MaxRAMPercentage=60   heap = 60% of the container memory limit; the rest is metaspace, threads, buffers
 #   ExitOnOutOfMemoryError  a Java OOM exits the JVM, so the orchestrator restarts it instead of leaving it limping
 #   user.timezone=UTC     postgres:16 rejects some JVM default zone names; containers must not depend on the host's
 # Per-environment extras (e.g. -XX:ActiveProcessorCount) come in through JAVA_TOOL_OPTIONS.

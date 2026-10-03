@@ -1,5 +1,5 @@
 # Alert rules. Prometheus evaluates them every 15 s; firing alerts show at http://localhost:9090/alerts and in
-# Grafana. Locally nothing is notified (no Alertmanager): in AWS, CloudWatch alarms play this part (Phase 7).
+# Grafana. Locally nothing is notified (no Alertmanager): in AWS, CloudWatch alarms play this part.
 # Every alert names the dashboard panel that explains it.
 groups:
   - name: buzzer-alerts
@@ -31,7 +31,7 @@ groups:
           summary: "scoring-service is {{ $value | humanize }} records behind on {{ $labels.redpanda_topic }}"
           description: "Is scoring-service running (BuzzerServiceDown)? Panel: Buzzer Game / Scoring lag at the broker."
 
-      # The answer's whole server-side trip (O.4), p99 over 5 min, against the 100 ms target. No traffic gives NaN,
+      # The answer's whole server-side trip, p99 over 5 min, against the 100 ms target. No traffic gives NaN,
       # and NaN never fires.
       - alert: BuzzerAckLatencyHigh
         expr: histogram_quantile(0.99, sum by (le) (rate(buzzer_answer_ack_latency_seconds_bucket[5m]))) > 0.1
@@ -44,7 +44,7 @@ groups:
             Compare end-to-end with the controller part: if only end-to-end grew, the STOMP thread pools are queueing.
             Panels: Buzzer Game / Ack latency, Where the time goes.
 
-      # The outbox's oldest unsent row (O.4). 5 s is many publisher runs (every 300 ms): the publisher is stuck or
+      # The outbox's oldest unsent row. 5 s is many publisher runs (every 300 ms): the publisher is stuck or
       # Kafka is refusing. max(): every session-service instance reports the same database-wide number.
       - alert: BuzzerOutboxStuck
         expr: max(buzzer_outbox_oldest_unsent_age_seconds) > 5

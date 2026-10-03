@@ -12,7 +12,6 @@ target/
 *.tfvars
 !*.tfvars.example
 
-
 # IDE / OS
 .idea/
 *.iml
@@ -20,8 +19,6 @@ target/
 .DS_Store
 Thumbs.db
 desktop.ini
-
-docs/study
 
 # k6 load-test summaries (tools/load/run-game.ps1)
 tools/load/results/

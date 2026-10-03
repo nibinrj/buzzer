@@ -1,7 +1,7 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Phase 1 end to end: register -> login -> create quiz -> add questions -> publish -> internal snapshot.
+    End to end: register -> login -> create quiz -> add questions -> publish -> internal snapshot.
 .DESCRIPTION
     Needs identity-service (8081) and quiz-service (8082) running, for example in two terminals:
         .\tasks.ps1 run -Svc identity-service

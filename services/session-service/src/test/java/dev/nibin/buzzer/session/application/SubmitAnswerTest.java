@@ -1,5 +1,6 @@
 package dev.nibin.buzzer.session.application;
 
+import com.github.benmanes.caffeine.cache.Caffeine;
 import dev.nibin.buzzer.events.AnswerSubmitted;
 import dev.nibin.buzzer.session.application.SubmitAnswer.Reason;
 import dev.nibin.buzzer.session.application.SubmitAnswer.Result;
@@ -63,8 +64,10 @@ class SubmitAnswerTest {
     private final AnswerRegistry registry = mock(AnswerRegistry.class);
     private final AnswerRepository answers = mock(AnswerRepository.class);
     private final EventOutbox outbox = mock(EventOutbox.class);
-    private final SubmitAnswer submitAnswer = new SubmitAnswer(sessions, players, registry, answers, outbox,
-            TransactionOperations.withoutTransaction());
+    // Real caches over the mocked repositories: the same lookups the service makes.
+    private final SubmitAnswer submitAnswer = new SubmitAnswer(
+            new SessionFacts(sessions, players, Caffeine.newBuilder().build(), Caffeine.newBuilder().build()),
+            registry, answers, outbox, TransactionOperations.withoutTransaction());
 
     SubmitAnswerTest() {
         when(sessions.findById(SESSION.id())).thenReturn(Optional.of(SESSION));

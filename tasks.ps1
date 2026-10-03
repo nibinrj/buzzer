@@ -157,7 +157,7 @@ function Set-KindSecret([string] $Name, [hashtable] $DotEnv, [string[]] $Keys, [
     if ($missing) { Stop-Task "Secret ${Name}: .env is missing $($missing -join ', ')" }
     $data = [ordered]@{}
     foreach ($key in $Keys) {
-        # A Secret's data values are base64: an encoding for arbitrary bytes, NOT encryption (K.1 §4).
+        # A Secret's data values are base64: an encoding for arbitrary bytes, NOT encryption.
         $data[$key] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($DotEnv[$key]))
     }
     $secret = [ordered]@{
@@ -303,7 +303,7 @@ try {
             if ($LASTEXITCODE -ne 0) { Stop-Task 'git rev-parse failed: images are tagged with the commit id.' }
             $tag = if (& git status --porcelain) { "$revision-dirty" } else { $revision }
 
-            # amd64 only: kind runs amd64 here. The arm64 build for ECS needs a registry push (Phase 6.5).
+            # amd64 only: kind runs amd64 here. The arm64 build for ECS needs a registry push.
             foreach ($service in (Get-ChildItem 'services' -Directory).Name) {
                 Invoke-Native docker @('build', '--platform', 'linux/amd64',
                     '--build-arg', "SERVICE=$service", '--build-arg', "REVISION=$tag",
@@ -336,7 +336,7 @@ try {
 
             # Order matters: namespaces, then the Secrets that live in them, then the pods that read the Secrets.
             Invoke-Native kubectl @('--context', $kubeContext, 'apply', '-f', 'infra/k8s/base/namespaces.yaml')
-            # One Secret per concern (K.1 D4): a pod only gets the values it needs.
+            # One Secret per concern: a pod only gets the values it needs.
             Set-KindSecret 'postgres-credentials' $dotEnv @('POSTGRES_USER', 'POSTGRES_PASSWORD',
                 'IDENTITY_DB_PASSWORD', 'QUIZ_DB_PASSWORD', 'SESSION_DB_PASSWORD', 'SCORING_DB_PASSWORD')
             Set-KindSecret 'redis-credentials' $dotEnv @('REDIS_PASSWORD')
@@ -446,7 +446,7 @@ try {
             }
         }
 
-        # Deleting the cluster deletes its PVCs too: in-cluster data is dev scaffolding (K.1 §9).
+        # Deleting the cluster deletes its PVCs too: in-cluster data is dev scaffolding.
         'kind-down' { Invoke-Native kind @('delete', 'cluster', '--name', $kindCluster) }
 
         'bench' {

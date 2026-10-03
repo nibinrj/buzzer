@@ -3,14 +3,14 @@
 - **Status:** Accepted
 - **Date:** 2026-09-30
 - **Deciders:** nibin
-- **Related:** ADR-004 (buzz ordering), plan §3.4 and Phase 5, study notes 5.1–5.5, `docs/chaos-scoring.md`
+- **Related:** ADR-004 (buzz ordering), ADR-008 (observability), `docs/chaos-scoring.md`
 
 ## Context
 
 session-service decides every answer (ADR-004) and writes it to Postgres together with an outbox row. The outbox publisher sends it to Kafka. scoring-service must turn those events into totals, a live top 10 and final results, **in a different process with its own database** (hard rule 4). The requirements:
 
 1. **Zero lost answers.** A lost event is a wrong score forever, and nobody notices.
-2. **Zero double-counted answers.** Duplicates will happen: the outbox can send a row twice (4.5), and a consumer rebalance or a crash before the offset commit redelivers records.
+2. **Zero double-counted answers.** Duplicates will happen: the outbox can send a row twice, and a consumer rebalance or a crash before the offset commit redelivers records.
 3. **Survive scoring-service being down** mid-game, then catch up with no manual step.
 4. **One bad record must not stop the game.** A Postgres blip or a malformed record on one partition must not freeze scoring for every other session on it.
 5. **No ordering guarantee to lean on.** Answers and lifecycle events are on different topics, several outbox publishers run in parallel, and retries move records out of line. `SessionEnded` can be read before a session's last answers.
@@ -71,7 +71,7 @@ sequenceDiagram
 - **Detection:** the DLT handler counts `buzzer.scoring.events.dead.lettered{topic}`, logs ids and exception types only (never the value or exception message, which can quote data), and acks.
 - **Owner:** the service owner (nibin). Nothing reads a DLT automatically, so a record there is a problem until a human looks.
 - **Draining:** read the record's `kafka_original-topic` and `kafka_exception-*` headers, fix the cause, then replay the value to the original topic with the same key. Replaying is always safe: `processed_events` skips it if it was actually scored. Discard only a record that can never be valid, and write down why.
-- **Today** this is a manual `rpk` procedure. Phase O adds the alert (DLT > 0). A replay tool is a revisit item.
+- **Today** this is a manual `rpk` procedure. An alert fires as soon as a DLT receives anything (ADR-008). A replay tool is a revisit item.
 
 ## Alternatives considered
 
@@ -126,7 +126,7 @@ sequenceDiagram
 ## Revisit when
 
 - **The DLT is ever non-empty in practice.** Build a replay tool (read the DLT, re-send to the original topic with the same key) rather than a longer `rpk` procedure.
-- **Postgres failovers take longer than the retry budget** (for example, RDS Multi-AZ failover, 60–120 s, Phase 7). Lengthen the back-off or add a blocking retry before the retry topics, so a failover doesn't fill the DLT.
+- **Postgres failovers take longer than the retry budget** (for example, RDS Multi-AZ failover, 60–120 s). Lengthen the back-off or add a blocking retry before the retry topics, so a failover doesn't fill the DLT.
 - **`processed_events` gets large.** Add a cleanup job that deletes rows older than Kafka's retention plus a margin.
-- **Phase B/9 shows scoring lagging** in a buzz storm. More partitions only help new topics, so decide before going live. Measure first.
+- **Load tests show scoring lagging** in a buzz storm. More partitions only help new topics, so decide before going live. Measure first.
 - **Scoring needs order-dependent logic** (for example, streak bonuses that depend on the previous answer). Then the retry topics and parallel outbox publishers become a correctness problem: redesign before adding it.

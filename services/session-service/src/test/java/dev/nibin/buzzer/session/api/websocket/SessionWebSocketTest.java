@@ -203,7 +203,7 @@ class SessionWebSocketTest {
         assertThat(adaQuestions.poll(300, TimeUnit.MILLISECONDS)).isNull();
     }
 
-    // --- tracing (O.6) ---
+    // --- tracing ---
 
     /**
      * One answer, one trace: the STOMP command opens it (no parent: browsers aren't traced), the outbox row stores
@@ -238,7 +238,7 @@ class SessionWebSocketTest {
                 .anyMatch(span -> span.getKind() == SpanKind.PRODUCER);
     }
 
-    // --- metrics (O.4): each meter moves ---
+    // --- metrics: each meter moves ---
 
     @Test
     void answersAreTimedByOutcomeEndToEndAndInTheController() throws Exception {
@@ -340,7 +340,7 @@ class SessionWebSocketTest {
         assertThat(sessions.findById(session.id()).orElseThrow().status()).isEqualTo(Session.Status.ENDED);
     }
 
-    // --- answers and reveal (batch 4.3) ---
+    // --- answers and reveal ---
 
     /**
      * The outbox publisher's only thread is stuck, as it is for up to max.block.ms on every run while Kafka is down.
@@ -447,7 +447,7 @@ class SessionWebSocketTest {
                 .findFirst().orElseThrow();
         assertThat(line.path(LogContext.USER_ID).asString()).isEqualTo(ada.toString());
         assertThat(line.path(LogContext.PLAYER_ID).asString()).isEqualTo(playerIdOf(ada).toString());
-        // Tracing (O.6) puts the STOMP command's trace into MDC too: from a log line straight to its trace.
+        // Tracing puts the STOMP command's trace into MDC too: from a log line straight to its trace.
         assertThat(line.path("traceId").asString()).matches("[0-9a-f]{32}");
         assertThat(line.path("spanId").asString()).matches("[0-9a-f]{16}");
         // Not the Tomcat thread the frame arrived on (where preSend runs), yet the MDC is there.

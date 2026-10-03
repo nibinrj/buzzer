@@ -1,4 +1,4 @@
-# The Gateway API objects (K.1 D1), the successor to Ingress. Three roles, three kinds:
+# The Gateway API objects, the successor to Ingress. Three roles, three kinds:
 #   GatewayClass: which controller implements gateways (Traefik)          - ../gatewayclass.yaml, once per cluster
 #   Gateway:      a listener: "accept HTTP on port 8000"                  - the cluster operator's part
 #   HTTPRoute:    which paths go to which Service                          - the application's part

@@ -1,5 +1,5 @@
 # Grafana reads this at startup (provisioning): the datasources exist without anyone clicking them together, and are
-# recreated the same way on every start. Fixed uids, so dashboards (O.8) can refer to them.
+# recreated the same way on every start. Fixed uids, so dashboards can refer to them.
 apiVersion: 1
 
 datasources:

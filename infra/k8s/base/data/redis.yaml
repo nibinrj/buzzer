@@ -1,4 +1,4 @@
-# Dev-only Redis 7 (in AWS this is ElastiCache, Phase 7). Live game state and the leaderboard can be rebuilt
+# Dev-only Redis 7 (in AWS this is ElastiCache). Live game state and the leaderboard can be rebuilt
 # (3.3 /state, 5.3 rebuild from Postgres), so the volume is a convenience, not a requirement.
 apiVersion: v1
 kind: Service
@@ -33,7 +33,7 @@ spec:
         app.kubernetes.io/name: redis
         app.kubernetes.io/component: cache
     spec:
-      # This Service is called "redis": service links would inject REDIS_PORT=tcp://… (K.1 gotcha 1).
+      # This Service is called "redis": service links would inject REDIS_PORT=tcp://….
       enableServiceLinks: false
       securityContext:
         runAsUser: 999      # the image's "redis" user

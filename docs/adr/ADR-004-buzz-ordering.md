@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-29
 - **Deciders:** nibin
-- **Related:** ADR-003 (real-time transport), ADR-005 (async scoring, to come), plan §3.1 and §3.3, study notes 4.1–4.5
+- **Related:** ADR-003 (real-time transport), ADR-005 (async scoring)
 
 ## Context
 
@@ -12,8 +12,8 @@ When a question opens, up to **500 players** answer within a few milliseconds of
 1. **One answer per player per question.** A retry, a double click or a second tab must not count twice.
 2. **Nothing after the deadline**, and nothing after the host reveals the answer.
 3. **One global arrival order** across all instances: no ties, no gaps, the same for everyone.
-4. **A rank among correct answers** (1st correct, 2nd correct…), because points depend on it (Phase 5).
-5. **Fast.** The player's ack must come back in milliseconds. The race must not queue 200 answers behind each other for hundreds of ms (the p99 collapse plan §3.1 warns about).
+4. **A rank among correct answers** (1st correct, 2nd correct…), because points depend on it (ADR-005).
+5. **Fast.** The player's ack must come back in milliseconds. The race must not queue 200 answers behind each other for hundreds of ms, or the p99 collapses.
 6. **App-server clocks can't be trusted to agree.** Each ECS task has its own clock, off by about a millisecond from the others, and 200 answers can arrive inside 10 ms.
 
 ## Decision
@@ -89,7 +89,7 @@ sequenceDiagram
 | 200 players released together (spread 1–6 ms) through 4 independent connections get seq exactly 1..200, one rank 1, contiguous ranks | `SubmitAnswerConcurrencyTest.twoHundredPlayersAtOnce…` — **20 of 20 runs passed** on 2026-09-28 |
 | One player sending 50 times at once is accepted exactly once | `SubmitAnswerConcurrencyTest.onePlayerSendingFiftyTimesAtOnce…` |
 | A wave after the deadline is all `LATE` and takes no numbers | `SubmitAnswerConcurrencyTest.aWaveAfterTheDeadline…` |
-| The tests catch the bug they exist for | Red run against separate Java commands: 50/50 accepted, first correct had rank 26 (study note 4.4) |
+| The tests catch the bug they exist for | Red run against separate Java commands: 50/50 accepted, first correct had rank 26 |
 | Duplicate/late/closed/wrong-question/not-running rules, TTLs, `NOSCRIPT` recovery, one cluster slot | `RedisAnswerRegistryTest` (14 tests, Testcontainers Redis) |
 | Correctness comes from the snapshot; refusals write nothing; Postgres failure → `NOT_RECORDED` | `SubmitAnswerTest` |
 | The answer row and its event commit together; the event reaches Kafka exactly once in the test | `OutboxTest`, `OutboxPublisherTest` (Testcontainers Postgres + Redpanda) |
@@ -97,7 +97,7 @@ sequenceDiagram
 
 ## Revisit when
 
-- **Phase 9 shows Redis CPU or latency** as the bottleneck during a buzz storm. Then measure the script's cost first; move to Redis Functions, or split sessions across shards (the hash tag already allows it).
+- **Load tests show Redis CPU or latency** as the bottleneck during a buzz storm. Then measure the script's cost first; move to Redis Functions, or split sessions across shards (the hash tag already allows it).
 - **The Redis → Postgres gap shows up in practice** (`NOT_RECORDED` in logs). Then make the Postgres write retryable, or write a reconciliation job that compares `buzz:{S}:Q` to the answer rows before the question's keys expire.
 - **Losing an acknowledged buzz on failover becomes unacceptable** (for example, prizes). Then use `WAIT 1 <ms>` after the script (wait for a replica), accepting the extra latency.
 - **Players need "who clicked first"** in a legal or competitive sense. Then this design is the wrong tool: you need signed client timestamps and a trust model, a different product.

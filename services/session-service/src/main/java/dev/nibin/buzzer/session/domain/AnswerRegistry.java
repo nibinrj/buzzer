@@ -3,7 +3,7 @@ package dev.nibin.buzzer.session.domain;
 import java.util.UUID;
 
 /**
- * Port: the single authority on who answered what, in which order (Redis, batch 4.2). One call checks and records
+ * Port: the single authority on who answered what, in which order (Redis). One call checks and records
  * an answer as ONE atomic step, so concurrent answers through different instances still get one agreed order.
  * <p>
  * It judges only what the live state knows: which question runs, whether it is open, the deadline, and who

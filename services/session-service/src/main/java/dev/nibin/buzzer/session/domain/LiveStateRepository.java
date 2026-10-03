@@ -27,7 +27,7 @@ public interface LiveStateRepository {
 
     /**
      * "Now" by the live state's own clock (Redis's TIME). Deadlines are computed from this, not from this JVM's
-     * clock, because the answer check (batch 4.2) compares against Redis's clock inside a Lua script: one clock
+     * clock, because the answer check compares against Redis's clock inside a Lua script: one clock
      * for both sides, whatever the app servers' clocks say.
      */
     Instant serverTime();

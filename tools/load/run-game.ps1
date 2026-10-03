@@ -22,7 +22,7 @@
 .EXAMPLE
     .\tools\load\run-game.ps1 -Players 5 -Settings @{ QUESTIONS = '3' }   # smoke test
 .EXAMPLE
-    .\tools\load\run-game.ps1 -Players 500 -BaseUrl https://<alb-dns-name>   # Phase 9, against AWS
+    .\tools\load\run-game.ps1 -Players 500 -BaseUrl https://<alb-dns-name>   # against AWS
 #>
 param(
     [int[]] $Players = @(50, 100, 200),

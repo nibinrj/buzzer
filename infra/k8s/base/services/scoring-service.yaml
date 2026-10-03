@@ -26,8 +26,8 @@ metadata:
     app.kubernetes.io/name: scoring-service
     app.kubernetes.io/component: service
 spec:
-  # 2: a consumer group hand-over (K.6). More than 3 would leave pods idle: 3 partitions per topic. overlays/kind runs
-  # 1 (memory); a single consumer recovers by itself after a kill (Phase 5).
+  # 2: a consumer group hand-over. More than 3 would leave pods idle: 3 partitions per topic. overlays/kind runs
+  # 1 (memory); a single consumer recovers by itself after a kill (docs/chaos-scoring.md).
   replicas: 2
   selector:
     matchLabels:
@@ -41,7 +41,7 @@ spec:
       enableServiceLinks: false
       automountServiceAccountToken: false
       # Graceful shutdown stops the listener containers, which commit their offsets: a clean hand-over, unlike the
-      # SIGKILL K.6 also tries.
+      # SIGKILL the chaos run also tries.
       terminationGracePeriodSeconds: 45
       securityContext:
         runAsNonRoot: true

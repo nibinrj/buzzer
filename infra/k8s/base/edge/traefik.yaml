@@ -1,5 +1,5 @@
-# Traefik v3.7.13: the cluster's front door (K.1 D1). It implements the Gateway API: it watches the Gateway and
-# HTTPRoute in gateway-api.yaml and routes accordingly. No Helm (K.1 D3): a ServiceAccount, the permissions from
+# Traefik v3.7.13: the cluster's front door. It implements the Gateway API: it watches the Gateway and
+# HTTPRoute in gateway-api.yaml and routes accordingly. No Helm: a ServiceAccount, the permissions from
 # Traefik's own docs, a Deployment and a Service.
 apiVersion: v1
 kind: ServiceAccount

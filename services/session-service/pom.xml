@@ -31,7 +31,7 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
             <scope>runtime</scope>
         </dependency>
-        <!-- Tracing: Micrometer Tracing with the OpenTelemetry bridge, and the OTLP exporter (O.6). -->
+        <!-- Tracing: Micrometer Tracing with the OpenTelemetry bridge, and the OTLP exporter. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-opentelemetry</artifactId>
@@ -112,6 +112,11 @@
         <dependency>
             <groupId>dev.nibin.buzzer</groupId>
             <artifactId>shared-events</artifactId>
+        </dependency>
+        <!-- In-memory caches of the session facts that never change (SessionFacts). Version from the Boot BOM. -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
         </dependency>
 
         <dependency>

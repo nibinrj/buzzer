@@ -54,7 +54,7 @@ spec:
           args:
             - --config.file=/etc/prometheus/prometheus.yml
             - --storage.tsdb.path=/prometheus
-            # Two days is plenty for K.6's screenshots; less data = less memory.
+            # Two days is plenty for a demo; less data = less memory.
             - --storage.tsdb.retention.time=2d
           ports:
             - name: http
@@ -71,8 +71,7 @@ spec:
             periodSeconds: 10
             failureThreshold: 6
           resources:
-            # ~10 targets every 15 s: 55 MiB right after start, growing with the stored series (2 days). Measured in
-            # K.5, see the study note.
+            # ~10 targets every 15 s: 55 MiB right after start, growing with the stored series (2 days). Measured.
             requests:
               cpu: 50m
               memory: 256Mi

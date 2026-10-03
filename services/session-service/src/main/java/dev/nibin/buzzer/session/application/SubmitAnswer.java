@@ -6,10 +6,7 @@ import dev.nibin.buzzer.session.domain.AnswerRegistration;
 import dev.nibin.buzzer.session.domain.AnswerRegistry;
 import dev.nibin.buzzer.session.domain.AnswerRepository;
 import dev.nibin.buzzer.session.domain.Player;
-import dev.nibin.buzzer.session.domain.PlayerRepository;
-import dev.nibin.buzzer.session.domain.Session;
 import dev.nibin.buzzer.session.domain.SessionQuestion;
-import dev.nibin.buzzer.session.domain.SessionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -22,9 +19,10 @@ import java.util.UUID;
 /**
  * Use case: a player answers the running question. In this order:
  * <ol>
- *   <li>Postgres reads: the caller must be a player of the session; the question must be one of its questions and
- *       the option one of the question's. Correctness is looked up here, from the stored questions. The client
- *       only says which option it picked.</li>
+ *   <li>Checks, from SessionFacts (read from Postgres once per session and player, then from memory): the caller
+ *       must be a player of the session; the question must be one of its questions and the option one of the
+ *       question's. Correctness is looked up here, from the stored questions. The client only says which option it
+ *       picked.</li>
  *   <li>Redis decides (AnswerRegistry, one atomic script): accepted with a seq, or why not.</li>
  *   <li>Postgres records an accepted answer AND its AnswerSubmitted event (the outbox), in one transaction. The
  *       event reaches Kafka later, from OutboxPublisher: scoring never slows down the answer's ack.</li>
@@ -32,24 +30,22 @@ import java.util.UUID;
  * Redis goes first because it is the one place every instance's answers pass in single file: it must decide before
  * anything is written. The price is a gap if step 3 fails after step 2 accepted: Redis counts the answer, Postgres
  * has no row, and a retry is a DUPLICATE. That case is logged and acked as NOT_RECORDED; the player loses this
- * question. A known limitation (batch 4.3 decision D2a), to be written down in ADR-004.
+ * question. A known limitation, documented in ADR-004.
  */
 @Service
 public class SubmitAnswer {
 
     private static final Logger log = LoggerFactory.getLogger(SubmitAnswer.class);
 
-    private final SessionRepository sessions;
-    private final PlayerRepository players;
+    private final SessionFacts facts;
     private final AnswerRegistry registry;
     private final AnswerRepository answers;
     private final EventOutbox outbox;
     private final TransactionOperations transaction;
 
-    public SubmitAnswer(SessionRepository sessions, PlayerRepository players, AnswerRegistry registry,
-            AnswerRepository answers, EventOutbox outbox, TransactionOperations transaction) {
-        this.sessions = sessions;
-        this.players = players;
+    public SubmitAnswer(SessionFacts facts, AnswerRegistry registry, AnswerRepository answers, EventOutbox outbox,
+            TransactionOperations transaction) {
+        this.facts = facts;
         this.registry = registry;
         this.answers = answers;
         this.outbox = outbox;
@@ -63,7 +59,7 @@ public class SubmitAnswer {
      * @throws LiveStateUnavailableException Redis can't be reached; nothing was decided or recorded, retry
      */
     public Result submit(UUID sessionId, UUID userId, UUID questionId, Integer optionIndex) {
-        Player player = players.find(sessionId, userId).orElseThrow(SessionNotFoundException::new);
+        Player player = facts.player(sessionId, userId).orElseThrow(SessionNotFoundException::new);
         // The caller arrives as a user; which player that is in this session is only known from here on.
         try (var ignored = MDC.putCloseable(LogContext.PLAYER_ID, player.playerId().toString())) {
             Result result = submitAs(sessionId, player, questionId, optionIndex);
@@ -73,13 +69,13 @@ public class SubmitAnswer {
     }
 
     private Result submitAs(UUID sessionId, Player player, UUID questionId, Integer optionIndex) {
-        Session session = sessions.findById(sessionId).orElseThrow(SessionNotFoundException::new);
+        List<SessionQuestion> questions = facts.questionsOf(sessionId).orElseThrow(SessionNotFoundException::new);
 
-        int questionIndex = indexOf(session.questions(), questionId);
+        int questionIndex = indexOf(questions, questionId);
         if (questionIndex < 0 || optionIndex == null) {
             return Result.rejected(questionId, Reason.INVALID);
         }
-        SessionQuestion question = session.questions().get(questionIndex);
+        SessionQuestion question = questions.get(questionIndex);
         if (optionIndex < 0 || optionIndex >= question.options().size()) {
             return Result.rejected(questionId, Reason.INVALID);
         }

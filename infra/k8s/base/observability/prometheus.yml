@@ -1,5 +1,5 @@
-# Prometheus on the kind cluster (K.5, Prometheus + Grafana only: no Jaeger or Loki, the machine's memory budget).
-# Same rules and job names as the compose stack (infra/local/observability/prometheus/prometheus.yml), so the O.8
+# Prometheus on the kind cluster (Prometheus + Grafana only: no Jaeger or Loki, the machine's memory budget).
+# Same rules and job names as the compose stack (infra/local/observability/prometheus/prometheus.yml), so the
 # alerts and dashboards work unchanged. What differs: targets are DISCOVERED from the Kubernetes API, not listed.
 
 global:
@@ -20,20 +20,20 @@ scrape_configs:
         namespaces:
           names: [buzzer]
     relabel_configs:
-      # Keep the services' management port (O.3), chosen by the port's NAME in the Deployments: no prometheus.io/*
+      # Keep the services' management port, chosen by the port's NAME in the Deployments: no prometheus.io/*
       # annotations to keep in sync with the port numbers, and Postgres/Redis/Redpanda/Traefik never match.
       - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component, __meta_kubernetes_pod_container_port_name]
         regex: service;management
         action: keep
       # instance = the pod's name instead of IP:port: pods get new IPs on every restart, and "which pod?" is the
-      # question during K.6. Unique, because only one port per pod survives the filter above.
+      # question during a chaos run. Unique, because only one port per pod survives the filter above.
       - source_labels: [__meta_kubernetes_pod_name]
         target_label: instance
       # The services already label every meter with application (Micrometer); pod adds which copy.
       - source_labels: [__meta_kubernetes_pod_name]
         target_label: pod
 
-  # Redpanda's own metrics, for the broker-side consumer lag (buzzer:consumer_group_lag, O.8). Its stable StatefulSet
+  # Redpanda's own metrics, for the broker-side consumer lag (buzzer:consumer_group_lag). Its stable StatefulSet
   # DNS name, so no discovery needed.
   - job_name: redpanda
     metrics_path: /public_metrics

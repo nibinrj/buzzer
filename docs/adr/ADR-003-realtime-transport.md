@@ -3,13 +3,13 @@
 - **Status:** Accepted
 - **Date:** 2026-09-28
 - **Deciders:** nibin
-- **Related:** ADR-001 (auth: RS256 + JWKS), ADR-002 (gateway responsibilities), plan §3.5
+- **Related:** ADR-001 (auth: RS256 + JWKS), ADR-002 (gateway responsibilities)
 
 ## Context
 
 A host runs a live quiz for up to **500 players** per session. The requirements that shape the transport:
 
-1. **Server → all players, fast.** When the host advances, every player must see the question within **~200 ms** (plan, core flow step 4).
+1. **Server → all players, fast.** When the host advances, every player must see the question within **~200 ms**.
 2. **Players → server, fast.** Answers and buzzes are the product. Their arrival order decides who wins (ADR-004), so the client-to-server path matters as much as the push.
 3. **Several server instances.** session-service runs on ECS Fargate behind an ALB and may scale out. Players in one room can land on different tasks.
 4. **Unreliable clients.** Phones switch networks and laptops sleep. A dropped connection must recover without the player losing the game.
@@ -73,5 +73,5 @@ A host runs a live quiz for up to **500 players** per session. The requirements 
 ## Revisit when
 
 - A message **must** reach clients that were briefly offline (for example, a live leaderboard players can't afford to miss). Then move to a STOMP broker relay, or Redis Streams with per-client offsets.
-- session-service runs **more than ~10 tasks**, or rooms grow past ~2,000 players. Then measure the fan-out cost first (Phase 9 load test), and consider per-session channels or a real broker.
+- session-service runs **more than ~10 tasks**, or rooms grow past ~2,000 players. Then measure the fan-out cost first (k6 load test, `docs/performance.md`), and consider per-session channels or a real broker.
 - Players report connection failures on restrictive networks. Then add SockJS or an SSE fallback for the server-to-client direction.

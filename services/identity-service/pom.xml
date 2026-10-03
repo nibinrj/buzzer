@@ -31,7 +31,7 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
             <scope>runtime</scope>
         </dependency>
-        <!-- Tracing: Micrometer Tracing with the OpenTelemetry bridge, and the OTLP exporter (O.6). -->
+        <!-- Tracing: Micrometer Tracing with the OpenTelemetry bridge, and the OTLP exporter. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-opentelemetry</artifactId>

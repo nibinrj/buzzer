@@ -1,6 +1,6 @@
 # The local kind cluster (the only overlay: AWS runs ECS, not Kubernetes). kind-specific settings go here so the
 # base stays environment-neutral: image tags, the Traefik NodePort, and what makes it fit the dev machine.
-# Secrets are deliberately NOT generated here: .\tasks.ps1 kind-up builds them from .env and .secrets\ (K.1 D4).
+# Secrets are deliberately NOT generated here: .\tasks.ps1 kind-up builds them from .env and .secrets\.
 #   kubectl kustomize infra/k8s/overlays/kind              # print what would be applied
 #   kubectl --context kind-buzzer apply -k infra/k8s/overlays/kind
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -26,9 +26,9 @@ images:
 
 # One copy of every service: the machine's memory goes to observability (Prometheus + Grafana) instead of extra
 # replicas. Each copy is a 640Mi JVM; pods total ~5.1 GiB against ~5.8 GiB allocatable on a 7.6 GB Docker VM
-# (kind-config.yaml's reservation). The base keeps K.1's counts (gateway 2, session 3, scoring 2).
+# (kind-config.yaml's reservation). The base keeps production-like counts (gateway 2, session 3, scoring 2).
 # What one copy gives up: a restart or deletion of any service is a short outage for it; the Redis relay across
-# session-service pods was proven with 2 in K.4 and isn't exercised day to day.
+# session-service pods was proven with 2 pods and isn't exercised day to day.
 replicas:
   - name: gateway
     count: 1

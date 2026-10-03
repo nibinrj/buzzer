@@ -1,11 +1,11 @@
 # Chaos check: kill scoring-service mid-game
 
-**Goal (plan, Phase 5 "done when"):** kill `scoring-service` in the middle of a game, restart it, and the final scores are exactly right: **zero lost answers, zero double-counted ones.**
+**Goal:** kill `scoring-service` in the middle of a game, restart it, and the final scores are exactly right: **zero lost answers, zero double-counted ones.**
 
 **What this proves**
 
-- **No loss while scoring is down.** Answers keep being accepted, sit in Kafka, and are scored after the restart. Behind this: the outbox (4.5), and committed offsets (5.2).
-- **No double counting across a crash and restart.** Behind this: `processed_events` (5.2).
+- **No loss while scoring is down.** Answers keep being accepted, sit in Kafka, and are scored after the restart. Behind this: the outbox, and committed offsets.
+- **No double counting across a crash and restart.** Behind this: `processed_events`.
 - **The live leaderboard catches up by itself** after the restart. Behind this: 5.3 and 5.4.
 - **An independent recomputation from `session_db` agrees with `scoring_db`**, row for row.
 
@@ -125,7 +125,7 @@ scoring-service is no longer UP.
 
 Play two more questions. Expect:
 
-- **Players still get `Accepted: #n in line.`** Answering doesn't depend on scoring. That's the point of making it asynchronous (plan §3.2).
+- **Players still get `Accepted: #n in line.`** Answering doesn't depend on scoring. That's the point of making it asynchronous.
 - **The leaderboard freezes** at the last version from step 4.
 - **The answers wait in Kafka.** After question 4:
 

@@ -26,7 +26,7 @@ metadata:
     app.kubernetes.io/name: gateway
     app.kubernetes.io/component: service
 spec:
-  # K.1 D9: 2 for real use, so one can restart without an outage. overlays/kind runs 1 (memory budget).
+  # 2 for real use, so one can restart without an outage. overlays/kind runs 1 (memory budget).
   replicas: 2
   selector:
     matchLabels:

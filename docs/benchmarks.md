@@ -77,8 +77,8 @@ in Redis (634 µs) costs about as much as 420 `EventReader.read` calls.
    result this small tells you only that the call costs nothing worth measuring. It doesn't support a precise
    comparison.
 
-**For Phase B's load tests:** none of the CPU code here can be the first bottleneck. Per answer it adds up to
-~1.6 µs. The answer path is dominated by network round trips (Redis, Kafka, Postgres), and that's where B.2/B.3
+**For the load tests:** none of the CPU code here can be the first bottleneck. Per answer it adds up to
+~1.6 µs. The answer path is dominated by network round trips (Redis, Kafka, Postgres), and that's where the load tests
 should look first.
 
 ## How to read a JMH result

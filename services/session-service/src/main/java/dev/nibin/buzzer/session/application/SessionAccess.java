@@ -1,37 +1,34 @@
 package dev.nibin.buzzer.session.application;
 
-import dev.nibin.buzzer.session.domain.PlayerRepository;
-import dev.nibin.buzzer.session.domain.SessionRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.UUID;
 
 /**
  * Who belongs to a session, for the WebSocket destination checks. Asked once per SUBSCRIBE, per host command and
- * per answer, not per pushed message, so reading Postgres here is cheap enough.
+ * per answer, not per pushed message. Answered from SessionFacts: per answer, a Postgres read here was one of the
+ * connections that made the pool the bottleneck at 200 players (docs/performance.md, H1).
  */
 @Service
 public class SessionAccess {
 
-    private final SessionRepository sessions;
-    private final PlayerRepository players;
+    private final SessionFacts facts;
 
-    public SessionAccess(SessionRepository sessions, PlayerRepository players) {
-        this.sessions = sessions;
-        this.players = players;
+    public SessionAccess(SessionFacts facts) {
+        this.facts = facts;
     }
 
     public boolean isHost(UUID sessionId, UUID userId) {
-        return sessions.findById(sessionId).filter(session -> session.hostId().equals(userId)).isPresent();
+        return facts.hostOf(sessionId).filter(userId::equals).isPresent();
     }
 
     /** Someone who joined. The host is not a player of their own session. */
     public boolean isPlayer(UUID sessionId, UUID userId) {
-        return players.find(sessionId, userId).isPresent();
+        return facts.player(sessionId, userId).isPresent();
     }
 
     /** The host, or someone who joined. */
     public boolean isHostOrPlayer(UUID sessionId, UUID userId) {
-        return isHost(sessionId, userId) || players.find(sessionId, userId).isPresent();
+        return isHost(sessionId, userId) || isPlayer(sessionId, userId);
     }
 }

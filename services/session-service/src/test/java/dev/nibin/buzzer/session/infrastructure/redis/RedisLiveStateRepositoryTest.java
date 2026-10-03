@@ -100,7 +100,7 @@ class RedisLiveStateRepositoryTest {
     void readsTheQuestionPointerAndDeadline() {
         UUID sessionId = UUID.randomUUID();
         Instant deadline = Instant.parse("2026-09-28T10:00:15Z");
-        // The format batch 3.4 will write.
+        // The format the live-state writer uses.
         redis.opsForHash().putAll(SessionKeys.state(sessionId), Map.of("status", "IN_PROGRESS", "questionIndex", "2",
                 "questionDeadline", String.valueOf(deadline.toEpochMilli())));
 

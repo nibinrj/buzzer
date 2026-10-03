@@ -1,7 +1,7 @@
 # Performance
 
 Load tests play whole games with `tools/load/game.js` (k6, STOMP over WebSocket, through the gateway). How the
-script works and what each metric means: `docs/study/batch-B.2-k6-game.md` and the top of `game.js`.
+script works and what each metric means: the comments at the top of `game.js`.
 Microbenchmarks of single functions are in `docs/benchmarks.md`.
 
 ## Local
@@ -32,7 +32,7 @@ answers acknowledged: 1,000 / 2,000 / 4,000 of 1,000 / 2,000 / 4,000.
 | **200** | **112 ms** | **266 ms** ✗ | 344 ms | 41 ms | 1.01 s | **2.37 s** ✗ | 3.30 s |
 
 ✗ = threshold crossed (ack p95 < 250 ms, push p95 < 2 s). `question_fanout` also crossed, but it isn't valid
-locally (two drifting clocks; see the B.2 study note). The two `stomp_errors` at 100 players were identified in the
+locally (it compares two clocks that drift apart). The two `stomp_errors` at 100 players were identified in the
 H1 runs below, where stderr was kept: `socket error websocket: close 1002 (protocol error)` as players leave after
 the game ended. That's a closing race in the script (DISCONNECT, then close), not a server fault. No service logged a
 WARN or ERROR during the ladder.
@@ -165,4 +165,53 @@ pool (10), then session-service restarted with `SPRING_DATASOURCE_HIKARI_MAXIMUM
 load: ack p95 233 vs 266 ms, scoring delay p50 0.62 vs 1.68 s. So compare only runs made in the same session, back to
 back, in the same order, and make one change at a time.
 
-<!-- B.3 fix batch: before/after table goes here. -->
+### Fix: an answer reads nothing from Postgres before Redis (SessionFacts, 2026-10-03)
+
+**Change (session-service only).** `SessionFacts` keeps the facts that never change once written in two bounded
+in-memory caches (Caffeine): a session's host and frozen questions, and who joined. `SubmitAnswer` and the STOMP
+destination check (`SessionAccess`) read them from there instead of Postgres. Only memberships that exist are
+cached, so a player who joins after a miss is found. Pool unchanged at 10.
+
+**Method.** As for H1: same session, the whole stack restarted fresh, warm-up 50 then measured 200. Control on the
+committed code first; then only session-service restarted on the new code.
+
+| 200 players | before (control) | after (SessionFacts) | change |
+|---|---:|---:|---|
+| **ack p50** (k6) | 73 ms | **12 ms** | ÷6 |
+| **ack p95** (k6) | 191 ms | **111 ms** | −42% |
+| ack p99 (k6) | 244 ms | 152 ms | −38% |
+| pool connections per answer | 4.35 | **1.19** | the target: one transaction |
+| answer handling p50 / p95 (server) | 46 / 98 ms | 9.9 / 85 ms | |
+| server ack p50 / p95 | 74 / 232 ms | 11 / 153 ms | |
+| connection held avg | 4.6 ms | 10.5 ms | the one left is the busier one (below) |
+| session-service CPU (max) | 3.1% | 1.9% | fewer queries to build and map |
+| cache hit ratio (memberships) | – | 98% (8,877 / 9,066) | misses = each player's first lookup |
+| leaderboard push p50 / p95 | 838 ms / 1.74 s | 969 ms / **2.39 s** ✗ | worse: see below |
+| scoring delay p50 / p95 | 0.78 / 2.3 s | 1.32 / 3.9 s | |
+| scoring events applied | 45.5 /s | 43.2 /s | scoring's fixed rate |
+
+At 50 players the ack went from 14 to 8 ms (p50) and from 32 to 12 ms (p95). Every player saw every question in
+all four games; `question_broadcast` stayed at 25 ms (p50) throughout.
+
+**What it did and didn't fix.**
+- **Fixed: the queue for connections.** One acquisition per answer instead of ~4.4, so the typical answer no longer
+  waits. The ack p50 (12 ms) is back to the 50-player level.
+- **Left: the tail.** The remaining transaction (answer row + outbox row) is now the only Postgres work, and a
+  question's 200 commits arrive within ~300 ms. Each connection is held twice as long as before (4.6 → 10.5 ms), and
+  the acquire wait stayed ~8 ms on average. Postgres' write path, under a burst, is the next limit for the slowest
+  acks. It's still within the threshold (p95 111 ms < 250 ms).
+- **Exposed: the asynchronous path.** Answers now reach the outbox and scoring sooner, scoring still applies ~44
+  events/s per session (H2), so its queue is longer and push p95 crossed 2 s. The pool-32 experiment showed the same.
+
+## Summary: what broke first locally, and why
+
+At 200 players the first thing to break was **the synchronous answer path in session-service**. It wasn't CPU,
+memory or GC: it was a queue. Each answer took about 4.4 Postgres connections. The STOMP permission check and the use
+case each re-read the player and the session's frozen questions before Redis, then a transaction recorded the
+answer. A question reaches everyone at once, so ~200 answers arrived within 300 ms, and 32 STOMP threads queued for
+10 pool connections. Answer handling went from 19 ms to 66 ms while the load only doubled. A bigger pool confirmed
+the diagnosis (ack p95 233 → 91 ms) but moved the queue into Postgres and would cost connections a small RDS instance
+doesn't have. Caching the facts that never change brought an answer down to one connection, and the ack p50 from 73
+to 12 ms with the same pool. The next limits are already measured: the burst of commits sets the ack tail, and
+scoring's one-consumer-per-session design (~44 events/s, about 13 ms each) sets the leaderboard's push latency,
+which crossed 2 s at 200 players.

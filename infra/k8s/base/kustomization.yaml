@@ -4,9 +4,9 @@ kind: Kustomization
 
 resources:
   - namespaces.yaml
-  - data       # Postgres, Redis, Redpanda (K.3)
-  - gatewayclass.yaml   # cluster-scoped: outside edge/, which sets a namespace (K.4)
-  - edge       # Traefik + the Gateway and HTTPRoute (K.4)
-  - services   # the five services (K.4)
-  - observability   # Prometheus + Grafana in namespace observability (K.5, trimmed: no Jaeger, no Loki)
+  - data       # Postgres, Redis, Redpanda
+  - gatewayclass.yaml   # cluster-scoped: outside edge/, which sets a namespace
+  - edge       # Traefik + the Gateway and HTTPRoute
+  - services   # the five services
+  - observability   # Prometheus + Grafana in namespace observability (trimmed: no Jaeger, no Loki)
   - scrape-access   # Prometheus may list pods in buzzer (a Role there, so not inside observability/)

@@ -1,29 +1,29 @@
 # Chaos check on Kubernetes: delete pods mid-game
 
-**Goal (Phase K, K.6):** play a game through the cluster's edge (`127.0.0.1:8000`) and delete pods while it runs:
+**Goal:** play a game through the cluster's edge (`127.0.0.1:8000`) and delete pods while it runs:
 - a **session-service** pod: its players reconnect, the other pod's players don't notice
 - a **scoring-service** pod: the other one takes over its Kafka partitions
 
 The final scores must still be exactly right: **`MATCH`**, the same SQL check as [docs/chaos-scoring.md](chaos-scoring.md).
 
 **What this proves**
-- **A deleted pod is replaced by Kubernetes**, and the game carries on. Behind this: the Deployment, the probes, preStop + graceful shutdown (K.4).
+- **A deleted pod is replaced by Kubernetes**, and the game carries on. Behind this: the Deployment, the probes, preStop + graceful shutdown.
 - **WebSocket players survive losing their pod.** The test client reconnects and redraws from `/state`, and live state is in Redis, not in the pod (3.3, 3.5).
-- **Players on another pod are unaffected**, because every broadcast goes through the Redis relay (3.4c).
+- **Players on another pod are unaffected**, because every broadcast goes through the Redis relay.
 - **The Kafka consumer group hands partitions over** when a scoring pod leaves, and back when the replacement joins. No answer is lost or counted twice (5.2, ADR-005).
 - **Scaling by hand works both ways.** A new session pod gets broadcasts as soon as it's ready, and removing one moves its players.
 
 **What it doesn't prove**
-- **Losing a node:** the cluster has one (K.1 D5).
+- **Losing a node:** the cluster has one.
 - **A crash between the score's commit and the Kafka ack:** too narrow to hit by hand, and covered by `ScoringEventListenerTest`.
 - **Automatic scaling:** see §12.
 
-**Why the steps move memory around:** the cluster runs **one copy of every service** to leave room for Prometheus and Grafana (K.5), with ~0.45 GiB of allocatable memory free. A second copy of a 640Mi JVM doesn't fit, so each step **borrows another service's slot**:
+**Why the steps move memory around:** the cluster runs **one copy of every service** to leave room for Prometheus and Grafana, with ~0.45 GiB of allocatable memory free. A second copy of a 640Mi JVM doesn't fit, so each step **borrows another service's slot**:
 - §4: quiz-service is idle once the session exists, so its slot goes to a second session pod.
 - §8: that slot then goes to a second scoring pod.
 - §11: `kubectl apply -k` puts the declared one-of-each back.
 
-If a scale-up doesn't fit, the new pod stays `Pending` (`Insufficient memory`). It doesn't take the node down (K.5's memory accounting).
+If a scale-up doesn't fit, the new pod stays `Pending` (`Insufficient memory`). It doesn't take the node down (the memory reservation in kind-config.yaml).
 
 Every command is PowerShell 7, run from the repo root (`D:\dev\buzzer`). About 25 minutes.
 
@@ -66,7 +66,7 @@ $k = @('--context', 'kind-buzzer', '-n', 'buzzer')
 ```powershell
 .\tools\http\chaos-game.ps1 -BaseUrl http://127.0.0.1:8000
 ```
-Same as chaos-scoring §2: a throwaway host whose password goes to your clipboard, and an 8-question quiz. **`127.0.0.1`, not `localhost`**: the cluster's port is IPv4-only, and `localhost` costs ~2 s per request from PowerShell (K.4 §7).
+Same as chaos-scoring §2: a throwaway host whose password goes to your clipboard, and an 8-question quiz. **`127.0.0.1`, not `localhost`**: the cluster's port is IPv4-only, and `localhost` costs ~2 s per request from PowerShell.
 
 ## 3. The host creates the session
 
@@ -76,7 +76,7 @@ Host tab: paste the email, **Ctrl+V** the password, *Log in*, paste the quiz id,
 
 ## 4. Make room for a second session-service pod
 
-The session already holds its snapshot of the quiz (3.2), so **quiz-service isn't needed again until someone edits a quiz**. Its slot goes to a second session pod:
+The session already holds its snapshot of the quiz, so **quiz-service isn't needed again until someone edits a quiz**. Its slot goes to a second session pod:
 
 ```powershell
 kubectl @k scale deployment/quiz-service --replicas=0
@@ -122,7 +122,7 @@ This is what a rollout, a node drain or an eviction does. Expect:
 | 📸 Buzzer Game → **Connected WebSockets** | dips while they're away, back to the full count after the reconnect |
 | Prometheus table (§5) | all connections on the surviving pod; the replacement starts at 0 (existing WebSockets don't move to a new pod, only new ones land there) |
 
-Why reconnecting players land on the **surviving** pod: during the ~15 s the replacement starts, it isn't *ready*, so it isn't in the Service's endpoints (K.1 §2).
+Why reconnecting players land on the **surviving** pod: during the ~15 s the replacement starts, it isn't *ready*, so it isn't in the Service's endpoints.
 
 Play **question 3**. Both groups answer, and every tab gets the reveal.
 
@@ -272,10 +272,10 @@ Every service is back at 1 replica, quiz-service included.
 
 | What | Why not here | In production |
 |---|---|---|
-| **HPA** (automatic scaling) | needs metrics-server and ~0.6 GiB per extra session pod the machine doesn't have | `autoscaling/v2` HPA, min 2. CPU is a weak signal for WebSockets (K.1 §6): better to scale on connections per pod, via KEDA or prometheus-adapter on `buzzer_websocket_connections` |
+| **HPA** (automatic scaling) | needs metrics-server and ~0.6 GiB per extra session pod the machine doesn't have | `autoscaling/v2` HPA, min 2. CPU is a weak signal for WebSockets: better to scale on connections per pod, via KEDA or prometheus-adapter on `buzzer_websocket_connections` |
 | **session-service 2 → 3** | a third 640Mi JVM doesn't fit, even borrowing quiz's slot | same commands as §4 with `--replicas=3`; works with Docker at 9 GB |
 | **PodDisruptionBudget** | one copy per service: a PDB of `minAvailable: 1` would block every drain | `minAvailable: 1` per service with ≥ 2 replicas, so a node drain never takes the last copy |
-| **Several nodes** | one-node kind (K.1 D5) | `topologySpreadConstraints` so two copies never share a node |
+| **Several nodes** | one-node kind | `topologySpreadConstraints` so two copies never share a node |
 
 ## 13. Result of a run
 

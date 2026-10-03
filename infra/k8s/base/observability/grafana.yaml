@@ -1,4 +1,4 @@
-# Grafana with the O.8 dashboards, from the same JSON files compose uses. Same image and settings as compose.
+# Grafana with the Buzzer dashboards, from the same JSON files compose uses. Same image and settings as compose.
 # Reached from Windows only through .\tasks.ps1 kind-obs (kubectl port-forward): never routed by Traefik.
 apiVersion: v1
 kind: Service
@@ -63,7 +63,7 @@ spec:
             - name: http
               containerPort: 3000
           # Grafana 13 registers dozens of internal APIs at startup: over a minute on a busy laptop. Without a startup
-          # probe, liveness killed it mid-start, every time (seen in K.5: "Shutdown started ... signal: terminated").
+          # probe, liveness killed it mid-start, every time (seen during testing: "Shutdown started ... signal: terminated").
           startupProbe:
             httpGet:
               path: /api/health
@@ -82,8 +82,7 @@ spec:
             periodSeconds: 10
             failureThreshold: 6
           resources:
-            # 192Mi was too little: it sat at the limit and started so slowly that probes killed it. Measured: see
-            # the K.5 study note.
+            # 192Mi was too little: it sat at the limit and started so slowly that probes killed it (measured).
             requests:
               cpu: 50m
               memory: 384Mi

@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * SubmitAnswer use case would add two Postgres reads per answer, and the pool of 10 connections would then be what
  * lines the answers up, not Redis. The use case's own rules are covered by SubmitAnswerTest and the STOMP tests.
  * <p>
- * Phase 4 is done when this class passes 20 runs in a row (see the project plan, batch 4.4).
+ * A race test is only trusted once it passes 20 runs in a row.
  */
 @ApiIntegrationTest
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)

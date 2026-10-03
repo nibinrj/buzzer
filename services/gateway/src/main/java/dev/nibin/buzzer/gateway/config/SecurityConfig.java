@@ -62,7 +62,7 @@ public class SecurityConfig {
                         .pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info",
                                 "/actuator/prometheus").permitAll()
                         // The same two groups on the public port (probes.add-additional-paths). Status only, and the
-                        // cluster edge (K.4) forwards only the API paths, so they aren't reachable from outside.
+                        // cluster edge forwards only the API paths, so they aren't reachable from outside.
                         .pathMatchers("/livez", "/readyz").permitAll()
                         .pathMatchers(PUBLIC_PATHS).permitAll()
                         // Everything else, routed or not, needs a valid token. Unrouted paths then 404.
