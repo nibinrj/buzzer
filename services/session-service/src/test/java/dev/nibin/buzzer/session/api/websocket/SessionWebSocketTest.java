@@ -41,6 +41,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.kafka.core.KafkaAdmin;
+import org.springframework.messaging.MessageDeliveryException;
 import org.springframework.messaging.converter.CompositeMessageConverter;
 import org.springframework.messaging.converter.JacksonJsonMessageConverter;
 import org.springframework.messaging.converter.StringMessageConverter;
@@ -152,9 +153,23 @@ class SessionWebSocketTest {
         bob = join("Bob");
     }
 
+    /**
+     * The server closes some connections itself (a refused frame gets an ERROR and a hang-up), on the client's
+     * WebSocket thread. That close can land between isConnected() and disconnect(), and disconnect() then throws
+     * MessageDeliveryException: nothing left to send DISCONNECT on. Seen once on a GitHub runner. Closed is all this
+     * cleanup wants, so that's fine.
+     */
     @AfterEach
     void disconnect() {
-        connections.stream().filter(StompSession::isConnected).forEach(StompSession::disconnect);
+        for (StompSession connection : connections) {
+            try {
+                if (connection.isConnected()) {
+                    connection.disconnect();
+                }
+            } catch (MessageDeliveryException alreadyClosed) {
+                // closed by the server in the meantime
+            }
+        }
     }
 
     // --- the game ---
