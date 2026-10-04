@@ -215,3 +215,65 @@ doesn't have. Caching the facts that never change brought an answer down to one 
 to 12 ms with the same pool. The next limits are already measured: the burst of commits sets the ack tail, and
 scoring's one-consumer-per-session design (~44 events/s, about 13 ms each) sets the leaderboard's push latency,
 which crossed 2 s at 200 players.
+
+## AWS
+
+Not run yet. This section says how the AWS run is measured, so the numbers can be compared with the local ones above.
+
+### Conditions
+
+- **Deployment:** `.\tasks.ps1 demo-up` (ADR-007): five services on Fargate Spot, ARM64, 0.5 vCPU / 1 GB each,
+  session-service 2–3 tasks, RDS db.t4g.micro, Valkey cache.t4g.micro, one Redpanda task, ALB in front of the gateway.
+- **Load:** the same `tools/load/game.js` from the dev PC to the ALB URL, ramping 50 → 100 → 200 → 500 players
+  (`run-game.ps1 -BaseUrl <alb_url>`). The gateway's per-IP limits must be raised for the run, as locally: one k6 machine
+  is one client IP (`demo-up` with `load_test = true` in terraform.tfvars sets the same values as `run-game.ps1` does locally).
+- **Network:** k6 crosses the internet to Mumbai, so every client-side latency includes the round trip from the dev
+  PC. Measure it once (`curl.exe -w "%{time_connect}"` to `/readyz`) and read the results against it.
+
+### What is measured, and with what
+
+| Question | Source | Cost |
+|---|---|---|
+| Ack latency, question broadcast, leaderboard push | k6's own metrics (`ack_latency`, `question_broadcast`, `leaderboard_push_latency`), as locally | free |
+| Question fan-out across tasks | `question_fanout` works here: the server and k6 clocks are both NTP-synced (locally the WSL clock drifts) | free |
+| CPU and memory per service | ECS basic metrics in CloudWatch (`AWS/ECS` CPUUtilization, MemoryUtilization per service, 1-minute) | free |
+| Autoscaling | session-service's desired count over the run (ECS service events) | free |
+| Which task handled which player | CloudWatch Logs Insights over session-service's JSON logs (below) | $0.0076 per GB scanned |
+| Errors, retries, outbox warnings | Logs Insights, `log.level` = WARN/ERROR | same |
+
+**What AWS doesn't show that local runs do:** the Prometheus histograms (answer handling, Hikari acquire time, STOMP
+executor busy threads, scoring delay) and the Jaeger traces. Shipping them would mean Container Insights or custom
+CloudWatch metrics (billed per metric; our histograms are hundreds of series) or a collector task. That's a cost
+choice, not a gap in the code: the services expose exactly the same metrics, and the local runs above are where the
+server-side explanation comes from. In AWS the question is narrower: does the deployed system meet the same targets
+over a real network, and where does it break first?
+
+### Logs Insights queries
+
+session-service logs one line per answer at DEBUG in AWS (ADR-007), with `sessionId` and `playerId` from the MDC.
+Every ECS task writes its own log stream, named after the task id.
+
+Answers of one game per task (two streams = players spread over both session tasks):
+
+```
+fields @logStream, sessionId, playerId
+| filter message like /^Answer / and sessionId = "<session id>"
+| stats count(*) as answers, count_distinct(playerId) as players by @logStream
+```
+
+Warnings and errors during the run, by service and message:
+
+```
+fields @timestamp, @log, log.level, message
+| filter log.level in ["WARN", "ERROR"]
+| stats count(*) as lines by @log, message
+| sort lines desc
+```
+
+One request across services, by trace id (from a k6 failure or a WARN line):
+
+```
+fields @timestamp, @log, message
+| filter traceId = "<trace id>"
+| sort @timestamp asc
+```

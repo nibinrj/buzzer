@@ -47,7 +47,7 @@
     },
     {
       "id": 3, "type": "timeseries", "title": "Rate: requests/s by endpoint",
-      "description": "uri is the route template (/api/sessions/{sessionId}/state), never the raw path: one series per endpoint, not per id. Kubernetes' probes (/livez, /readyz on the service port, K.3b) are left out: they are not user traffic.",
+      "description": "uri is the route template (/api/sessions/{sessionId}/state), never the raw path: one series per endpoint, not per id. Kubernetes' probes (/livez, /readyz on the service port) are left out: they are not user traffic.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 5 },
       "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },

@@ -3,7 +3,7 @@
 - **Status:** Accepted (the first apply/destroy, below, is still owed)
 - **Date:** 2026-10-03
 - **Deciders:** nibin
-- **Related:** ADR-002 (gateway responsibilities), ADR-009 (kind locally, ECS in AWS). ADR-007 (cost model) follows in Phase 7. Code: `infra/terraform/{bootstrap, modules/network, modules/ecs-service, envs/dev}`.
+- **Related:** ADR-002 (gateway responsibilities), ADR-009 (kind locally, ECS in AWS). ADR-007 (the full deployment and its cost) builds on this one. Code: `infra/terraform/{bootstrap, modules/network, modules/ecs-service, envs/dev}`.
 
 ## Context
 
@@ -39,7 +39,7 @@ The AWS deployment is an **on-demand demo environment**: `demo-up` creates it, s
    Two is the minimum an ALB and the RDS/ElastiCache subnet groups accept.
 5. **Public subnets** (one /24 per AZ, from `.0`): the **ALB and the ECS tasks**. Default route to the internet gateway.
    Nothing gets a public IP automatically; each ECS task asks for one (`assign_public_ip`).
-6. **Private subnets** (one /24 per AZ, from `.100`): **RDS and ElastiCache** (Phase 7). **No route out at all.**
+6. **Private subnets** (one /24 per AZ, from `.100`): **RDS and ElastiCache**. **No route out at all.**
 7. **No NAT gateway and no interface endpoints.** Tasks reach AWS APIs over their own public IP.
 8. **One S3 gateway endpoint** on both route tables. It's free and keeps S3 traffic (including ECR image layers) on
    AWS's network.
@@ -48,7 +48,7 @@ The AWS deployment is an **on-demand demo environment**: `demo-up` creates it, s
 ### Who may talk to whom (security groups)
 10. Internet → **ALB on port 80** → each service's tasks **on that service's port only** (the ALB's egress names each
     service's security group). A task's security group accepts nothing else: a public IP doesn't make it reachable.
-11. Tasks → anywhere outbound (HTTPS to AWS APIs; Phase 7 adds the data stores, whose security groups will accept only
+11. Tasks → anywhere outbound (HTTPS to AWS APIs, and the data stores, whose security groups will accept only
     the tasks' security groups).
 
 ### Compute (`modules/ecs-service`)
@@ -59,13 +59,14 @@ The AWS deployment is an **on-demand demo environment**: `demo-up` creates it, s
 14. Per service: 0.5 vCPU / 1 GB, read-only root filesystem with a task-local `/tmp`, logs to CloudWatch with
     **1-day retention**, an execution role (ECR, logs, its own secrets only) and a task role with **no permissions**
     (the services call no AWS API). Deployment circuit breaker with rollback.
-15. **The ALB checks `/readyz`** on the service port (K.3b). ECS has no `preStop`: `stopTimeout` (30 s, at most 120)
+15. **The ALB checks `/readyz`** on the service port, not the management port. ECS has no `preStop`: `stopTimeout` (30 s, at most 120)
     and the target group's **30 s deregistration delay** give the same drain (ADR-009).
 16. **Plain HTTP for now.** HTTPS needs a certificate for a domain the project doesn't own. See the consequences.
 
-### Phase 6 scope
+### First deployment
 17. One service, **identity-service, at `desired_count = 0`**: it runs Flyway against Postgres at startup, and Postgres
-    arrives in Phase 7. The ALB forwards everything to it until Phase 7 puts the gateway in front (ADR-002).
+    isn't deployed yet. The ALB forwards everything to it until the gateway runs on ECS and goes in front (ADR-002).
+    *Superseded by ADR-007:* all five services run, and the ALB forwards to the gateway only.
 
 ## Alternatives considered
 
@@ -102,8 +103,9 @@ The AWS deployment is an **on-demand demo environment**: `demo-up` creates it, s
 - **Fargate ARM64 Spot in Mumbai specifically** isn't confirmed by a test yet (the pricing page lists ARM Spot; its
   per-region table loads dynamically). If tasks fail to place, `cpu_architecture = "X86_64"` (and `push -Arch amd64`)
   or `use_spot = false`.
-- The JWT signing keys are files today (`IDENTITY_JWT_*_KEY_LOCATION`), and Fargate has no secret volumes: Phase 7.1
-  must choose how they reach the container.
+- The JWT signing keys are files today (`IDENTITY_JWT_*_KEY_LOCATION`), and Fargate has no secret volumes: they need
+  another way into the container before identity-service can run on ECS. *Resolved in ADR-007:* Spring Boot's
+  `base64:` resource location, from Secrets Manager.
 - Logs cost **$0.67 per GB ingested** in Mumbai. A load test at INFO level could be the largest line of a demo.
 
 ## Verification
@@ -113,11 +115,11 @@ The AWS deployment is an **on-demand demo environment**: `demo-up` creates it, s
 | The code is well-formed | `terraform fmt -recursive -check`: clean (2026-10-03) |
 | The code is valid against the AWS provider (6.x) | `terraform validate` in `bootstrap` and `envs/dev`: "Success! The configuration is valid.", no warnings, AWS provider **6.67.0** pinned in both `.terraform.lock.hcl` files (2026-10-03) |
 | `push` builds working arm64 images on the amd64 dev PC | identity-service via `docker buildx build --platform linux/arm64 --load` in 18 s; image `linux/arm64`, `java -version` = Temurin 21.0.12.1, runs as uid 10001, `uname -m` = `aarch64` (2026-10-03) |
-| The bootstrap creates a private, TLS-only, versioned state bucket and immutable ECR repositories | **Owed:** the owner's `apply` of `bootstrap`; console or `aws s3api get-bucket-policy` |
+| The bootstrap creates a private, TLS-only, versioned state bucket and immutable ECR repositories | **Owed:** an `apply` of `bootstrap`; console or `aws s3api get-bucket-policy` |
 | `envs/dev` state is in S3 with a lock file | **Owed:** `init` with the backend config, then a `.tflock` object visible during an `apply` |
-| A task in a public subnet with no NAT can pull from ECR and log to CloudWatch | **Owed:** `identity_desired_count = 1` for one apply: the task starts, pulls, logs, then exits on the missing database (expected in Phase 6) |
-| The ALB answers and forwards to identity-service's target group | **Owed:** `http://<alb>/readyz` returns 503 (no healthy target: expected until Phase 7 gives identity a database) |
-| Only the ALB reaches the tasks | **Owed in Phase 7** (needs a task that stays up): the task's public IP on port 8081 times out while the ALB URL answers |
+| A task in a public subnet with no NAT can pull from ECR and log to CloudWatch | **Owed:** `demo-up` (ADR-007): every service reaches "stable", each log group has a stream per task |
+| The ALB answers and forwards to the gateway | **Owed:** `http://<alb>/readyz` returns 200 after `demo-up` |
+| Only the ALB reaches the tasks | **Owed:** during a demo, a gateway task's public IP on port 8080 times out while the ALB URL answers |
 | `demo-down` leaves nothing billable but the bootstrap | **Owed:** `terraform destroy`, then no resource tagged `Project=buzzer, Stack=dev` remains; apply/destroy times noted |
 
 ## Revisit when
@@ -131,5 +133,5 @@ The AWS deployment is an **on-demand demo environment**: `demo-up` creates it, s
   fewer public tasks behind one egress path.
 - **The account has the legacy free tier:** RDS, ElastiCache and ALB hours may be free, which changes ADR-007's numbers,
   not this topology.
-- **Terraform's floor:** CLAUDE.md pins ≥ 1.10; the S3 lock file is GA from 1.11. Raise `required_version` if a 1.10
-  machine ever runs this.
+- **Terraform's floor:** the bootstrap requires ≥ 1.10; `envs/dev` now requires ≥ 1.11 (write-only arguments, ADR-007),
+  which is also where the S3 lock file became GA.
