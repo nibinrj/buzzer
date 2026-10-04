@@ -1,5 +1,5 @@
 # The safety net for a forgotten demo-down: an email when the account's spend this month passes the limit, or is
-# forecast to. A demo left running costs a few dollars a day (ADR-007), so a $5 monthly limit catches it within a
+# forecast to. A demo left running costs a few dollars a day, so a $5 monthly limit catches it within a
 # day or two. Account-wide, not filtered by tag: whatever is costing money should trigger it. The first two budgets
 # of an account are free.
 

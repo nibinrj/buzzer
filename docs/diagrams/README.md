@@ -7,8 +7,8 @@ C4-style views of Buzzer, drawn from the code and Terraform as they are (Mermaid
 | [1. System context](#1-system-context) | Who uses Buzzer and what it depends on |
 | [2. Containers](#2-containers) | The five services, their stores, and every call or event between them |
 | [3. One answer, end to end](#3-one-answer-end-to-end) | The buzz race and asynchronous scoring as a sequence |
-| [4. AWS deployment](#4-aws-deployment) | The demo environment: network, ECS, data stores (ADR-006, ADR-007) |
-| [5. Delivery](#5-delivery) | CI, images and deploys (ADR-010) |
+| [4. AWS deployment](#4-aws-deployment) | The demo environment: network, ECS, data stores |
+| [5. Delivery](#5-delivery) | CI, images and deploys |
 
 ## 1. System context
 
@@ -167,5 +167,5 @@ flowchart LR
     local["Operator: tasks.ps1 demo-up -Tag commit"] --> ecsr
 ```
 
-The images and deploy jobs are designed in ADR-010; until that workflow is added, `.\tasks.ps1 push` builds the
-images and the operator pushes them.
+`.github/workflows/deploy.yml` runs both jobs. Until its `AWS_DEPLOY_ROLE_ARN` variable is set, `.\tasks.ps1 push`
+builds the images and the operator pushes them.

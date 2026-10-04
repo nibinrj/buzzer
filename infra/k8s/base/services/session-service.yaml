@@ -1,5 +1,5 @@
 # session-service: sessions, the STOMP WebSocket endpoint, the buzz race, the outbox. Several pods are safe: the
-# Redis relay delivers every broadcast to the clients of every pod, and Redis orders the answers (ADR-004).
+# Redis relay delivers every broadcast to the clients of every pod, and Redis orders the answers.
 # Same shape as identity-service.yaml, where each setting is explained.
 apiVersion: v1
 kind: Service
@@ -40,7 +40,7 @@ spec:
     spec:
       enableServiceLinks: false
       automountServiceAccountToken: false
-      # WebSockets: on delete, open connections are closed and players reconnect to another pod (ADR-003). The
+      # WebSockets: on delete, open connections are closed and players reconnect to another pod. The
       # grace period gives Spring time to finish in-flight frames and the outbox publisher its current run.
       terminationGracePeriodSeconds: 45
       securityContext:

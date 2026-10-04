@@ -9,7 +9,7 @@
 | `EventReaderBenchmark.read` | `EventReader.read` on one `AnswerSubmitted` record: type header, Jackson 3 parse, field checks | scoring-service, once per Kafka record |
 | `EventReaderBenchmark.jacksonOnly` | `JsonMapper.readValue` alone, the same JSON | reference point for `read` |
 | `SubmitAnswerBenchmark.script` | `submit_answer.lua` via EVALSHA, one accepted answer | session-service, once per answer |
-| `SubmitAnswerBenchmark.separateCommands` | The script's 9 commands sent one by one from Java | Nowhere. This is what the script replaced (ADR-004) |
+| `SubmitAnswerBenchmark.separateCommands` | The script's 9 commands sent one by one from Java | Nowhere. This is what the script replaced |
 
 `SubmitAnswerEquivalenceTest` checks that the script and the separate commands give the same replies for every
 outcome (accepted, duplicate, wrong question, closed, late, not running). Without that check, comparing their speed
@@ -67,7 +67,7 @@ in Redis (634 µs) costs about as much as 420 `EventReader.read` calls.
    So almost all the time is the network, not Redis: ~0.6 ms per round trip here. Most of that is Docker Desktop
    forwarding the port from Windows into its WSL 2 VM. On AWS, inside one VPC, each round trip is shorter, so both
    numbers drop. The ratio still follows the round-trip count, though. The speed is a bonus: the script exists
-   because it is atomic (ADR-004), and the separate commands are not.
+   because it is atomic, and the separate commands are not.
 2. **`EventReader`'s own checks cost nothing measurable.** `read` and `jacksonOnly` differ by 52 ns, and their error
    intervals overlap (1,450–1,568 vs 1,350–1,564). Parsing the JSON is the whole cost, ~1.5 µs per record. Next to
    the database transaction that follows each record, that's noise.

@@ -30,7 +30,7 @@ import java.util.UUID;
  * Redis goes first because it is the one place every instance's answers pass in single file: it must decide before
  * anything is written. The price is a gap if step 3 fails after step 2 accepted: Redis counts the answer, Postgres
  * has no row, and a retry is a DUPLICATE. That case is logged and acked as NOT_RECORDED; the player loses this
- * question. A known limitation, documented in ADR-004.
+ * question. A known limitation.
  */
 @Service
 public class SubmitAnswer {

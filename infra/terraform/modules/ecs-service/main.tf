@@ -102,7 +102,7 @@ resource "aws_ecs_task_definition" "this" {
         }
       ]
 
-      # ECS has no preStop hook: SIGTERM starts Spring's graceful shutdown, stopTimeout bounds it (ADR-009).
+      # ECS has no preStop hook: SIGTERM starts Spring's graceful shutdown, stopTimeout bounds it.
       stopTimeout = var.stop_timeout
 
       logConfiguration = {

@@ -156,7 +156,7 @@ pool (10), then session-service restarted with `SPRING_DATASOURCE_HIKARI_MAXIMUM
   at 100 players. The queue moved from the pool into the database. That points at the real fix: an answer that
   needs one connection instead of three (stop re-reading the session and the player). A bigger pool only trades a
   wait in Java for contention in Postgres. In AWS it would also eat into a small RDS instance's connection limit,
-  shared by four databases (ADR-007).
+  shared by four databases.
 - **The queue moved downstream, as H2/H3 predicted.** Answers reached the outbox faster, so its backlog rose (0 →
   139 sampled), scoring delay p50 tripled (0.62 → 1.88 s), and push p95 crossed its threshold (1.91 → 3.46 s).
   Scoring applied the same ~43 events/s in both runs: it runs at a fixed rate, whatever arrives.
@@ -222,7 +222,7 @@ Not run yet. This section says how the AWS run is measured, so the numbers can b
 
 ### Conditions
 
-- **Deployment:** `.\tasks.ps1 demo-up` (ADR-007): five services on Fargate Spot, ARM64, 0.5 vCPU / 1 GB each,
+- **Deployment:** `.\tasks.ps1 demo-up`: five services on Fargate Spot, ARM64, 0.5 vCPU / 1 GB each,
   session-service 2–3 tasks, RDS db.t4g.micro, Valkey cache.t4g.micro, one Redpanda task, ALB in front of the gateway.
 - **Load:** the same `tools/load/game.js` from the dev PC to the ALB URL, ramping 50 → 100 → 200 → 500 players
   (`run-game.ps1 -BaseUrl <alb_url>`). The gateway's per-IP limits must be raised for the run, as locally: one k6 machine
@@ -250,7 +250,7 @@ over a real network, and where does it break first?
 
 ### Logs Insights queries
 
-session-service logs one line per answer at DEBUG in AWS (ADR-007), with `sessionId` and `playerId` from the MDC.
+session-service logs one line per answer at DEBUG in AWS, with `sessionId` and `playerId` from the MDC.
 Every ECS task writes its own log stream, named after the task id.
 
 Answers of one game per task (two streams = players spread over both session tasks):

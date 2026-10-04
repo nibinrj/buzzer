@@ -1,6 +1,6 @@
 # scoring-service: the Kafka consumer, the Redis leaderboard, the results API. Two pods share the consumer group
 # "scoring-service": Kafka gives each some of the 3 partitions, and when one pod dies the other takes its partitions
-# over from the last committed offsets (ADR-005). Same shape as identity-service.yaml, where each setting is explained.
+# over from the last committed offsets. Same shape as identity-service.yaml, where each setting is explained.
 apiVersion: v1
 kind: Service
 metadata:

@@ -1,4 +1,4 @@
-# The demo's network (ADR-006):
+# The demo's network:
 #
 #   public subnets   ALB + ECS tasks. Route to the internet gateway. Tasks get a public IP to reach ECR,
 #                    CloudWatch Logs and Secrets Manager directly, so there's no NAT gateway. What may reach a task is

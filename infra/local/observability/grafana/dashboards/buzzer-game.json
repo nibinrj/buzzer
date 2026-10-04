@@ -133,7 +133,7 @@
     },
     {
       "id": 14, "type": "timeseries", "title": "Events applied vs skipped as duplicates",
-      "description": "Each event is applied once; duplicates are redeliveries and retries that processed_events turned away (ADR-005).",
+      "description": "Each event is applied once; duplicates are redeliveries and retries that processed_events turned away.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 26 },
       "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
@@ -144,7 +144,7 @@
     },
     {
       "id": 15, "type": "stat", "title": "Dead-lettered (last hour)",
-      "description": "Records in a DLT: scores missing until drained by hand (ADR-005). Alert BuzzerScoringDeadLetter. Empty (no data) until the first one ever.",
+      "description": "Records in a DLT: scores missing until drained by hand. Alert BuzzerScoringDeadLetter. Empty (no data) until the first one ever.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 26 },
       "fieldConfig": {

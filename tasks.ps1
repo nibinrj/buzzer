@@ -192,7 +192,7 @@ function Set-KindSecret([string] $Name, [hashtable] $DotEnv, [string[]] $Keys, [
 
 $mvnw = Join-Path $PSScriptRoot 'mvnw.cmd'
 
-# The AWS demo stack and its rough price, shown before anything is created (ADR-007).
+# The AWS demo stack and its rough price, shown before anything is created.
 $demoStack = Join-Path 'infra' 'terraform' 'envs' 'dev'
 $demoCostPerHour = 'about $0.15-0.25 per hour while it runs, plus $0.67 per GB of logs'
 

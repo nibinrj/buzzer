@@ -20,7 +20,7 @@ import java.util.UUID;
  * </ul>
  * Only for measuring them side by side. The second one is not safe to use: between its ZSCORE and its ZADD another
  * session-service instance can accept the same player's answer, and two answers can take the same place in line.
- * That race is why the script exists (ADR-004).
+ * That race is why the script exists.
  */
 final class SubmitAnswer {
 

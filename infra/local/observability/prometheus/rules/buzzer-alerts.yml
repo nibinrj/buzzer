@@ -4,7 +4,7 @@
 groups:
   - name: buzzer-alerts
     rules:
-      # A record in a DLT is a score (or a lifecycle change) that is MISSING until a human drains it (ADR-005).
+      # A record in a DLT is a score (or a lifecycle change) that is MISSING until a human drains it.
       # increase() over a window rather than "total > 0": the counter restarts at 0 with the service, and a counter
       # that only ever grows would keep the alert firing forever after the first record.
       # increase() needs an earlier sample to see the first record: ScoringEventListener registers the counter at 0
@@ -16,7 +16,7 @@ groups:
         annotations:
           summary: "Records reached {{ $labels.topic }}: scores are missing"
           description: >-
-            {{ $value | humanize }} record(s) in the last 15 min. Drain by hand (ADR-005, "What goes to the DLT").
+            {{ $value | humanize }} record(s) in the last 15 min. Drain by hand.
             Panel: Buzzer Game / Dead-lettered.
 
       # Broker-measured lag (buzzer:consumer_group_lag): fires even when scoring-service is down, which is exactly

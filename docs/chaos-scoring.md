@@ -286,7 +286,7 @@ docker compose exec redpanda rpk topic describe session.lifecycle-dlt -p
 | A DLT has records | scoring-service's log line `Dead-lettered: … exception=… cause=…` names the failure. Those answers are **not** scored: that's a real bug. |
 | `answers` higher in `actual` than `expected` | Double counting: `processed_events` failed its job. Stop and investigate. |
 | Unsent outbox rows > 0 | session-service can't reach Kafka; its log says `not acknowledged by Kafka`. |
-| A player shows fewer answers than they clicked | Only if one was refused (DUPLICATE, LATE, CLOSED), or acked `NOT_RECORDED`: Redis accepted it but Postgres failed. That's a known gap (ADR-004), and then it's missing on **both** sides, so the comparison still matches. |
+| A player shows fewer answers than they clicked | Only if one was refused (DUPLICATE, LATE, CLOSED), or acked `NOT_RECORDED`: Redis accepted it but Postgres failed. That's a known gap, and then it's missing on **both** sides, so the comparison still matches. |
 
 ## Clean up
 

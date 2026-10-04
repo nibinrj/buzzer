@@ -1,5 +1,7 @@
 # Buzzer
 
+[![CI](https://github.com/nibinrj/buzzer/actions/workflows/ci.yml/badge.svg)](https://github.com/nibinrj/buzzer/actions/workflows/ci.yml)
+
 A real-time multiplayer quiz platform in the style of Kahoot. A host starts a live game, players join with a room
 code, every player gets each question at the same moment, and **the first correct buzz wins the round**.
 
@@ -8,7 +10,8 @@ concurrency, exactly-right scores over at-least-once messaging, fan-out across i
 bottleneck under load.
 
 **Stack:** Java 21 · Spring Boot 4.1 · Spring Cloud Gateway 2025.1 · WebSocket/STOMP · Kafka (Redpanda) · Redis ·
-PostgreSQL 16 · Flyway · Testcontainers · OpenTelemetry · Prometheus · Grafana · Jaeger · Kubernetes (kind) · k6 · JMH
+PostgreSQL 16 · Flyway · Testcontainers · OpenTelemetry · Prometheus · Grafana · Jaeger · Kubernetes (kind) · k6 · JMH ·
+Terraform · AWS (ECS Fargate, RDS, ElastiCache) · GitHub Actions
 
 ---
 
@@ -16,7 +19,7 @@ PostgreSQL 16 · Flyway · Testcontainers · OpenTelemetry · Prometheus · Graf
 
 ```mermaid
 flowchart LR
-    C[Browser clients<br/>host + players] -->|HTTPS / WebSocket| GW[gateway<br/>Spring Cloud Gateway]
+    C[Browser clients<br/>host + players] -->|HTTP / WebSocket| GW[gateway<br/>Spring Cloud Gateway]
 
     GW --> ID[identity-service]
     GW --> QZ[quiz-service]
@@ -65,8 +68,6 @@ and gives correct answers a `correctRank`.
 - The script is **~8.5× faster** than sending the same commands one by one (JMH: 634 µs vs 5,361 µs), but it exists
   because it's atomic. The speed is a bonus.
 
-→ [ADR-004: Buzz ordering](docs/adr/ADR-004-buzz-ordering.md)
-
 ### 2. Exactly-right scores over at-least-once Kafka
 The answer row and an **outbox** row are written in the same transaction; a publisher sends outbox rows to Kafka
 keyed by `sessionId` (per-session order). scoring-service acks only after its database commit, and a
@@ -77,17 +78,15 @@ Points: `max(300, 1000 − 100 × (correctRank − 1))` for a correct answer, 0 
 time, so the consumer doesn't depend on arrival order.
 
 - **Chaos-tested:** scoring-service killed mid-game, restarted, consumer lag drained, final scores compared to a SQL
-  query over the raw answers: `MATCH`. The same check passes on Kubernetes with session and scoring pods deleted
-  mid-game.
+  query over the raw answers: `MATCH`. The same check also passed on Kubernetes in a scripted game with session and
+  scoring pods deleted mid-game.
 
-→ [ADR-005: Async scoring](docs/adr/ADR-005-async-scoring.md) · [chaos procedure](docs/chaos-scoring.md)
+→ [chaos procedure](docs/chaos-scoring.md)
 
 ### 3. Real-time fan-out
 Players connect over STOMP/WebSocket, authenticated on `CONNECT`, with per-destination authorization (only the host
 can start/advance; only the session's players can subscribe). Broadcasts go through **Redis pub/sub**, so players on
 different instances see every question. A reconnecting player redraws from `GET /api/sessions/{id}/state`.
-
-→ [ADR-003: Real-time transport](docs/adr/ADR-003-realtime-transport.md)
 
 ### 4. Measured, then fixed, a real bottleneck
 Full games load-tested with k6 (STOMP over WebSocket, through the gateway). At 200 players the synchronous answer
@@ -110,8 +109,6 @@ Numbers come from a single laptop running everything, so they compare runs; they
 JSON logs with `traceId`/`sessionId`/`playerId`, Prometheus metrics (answer latency histograms, outbox backlog,
 consumer lag, DLT count), and OpenTelemetry traces that follow one answer from the gateway through STOMP, the outbox
 and Kafka into scoring. Grafana dashboards and alert rules are provisioned from the repo.
-
-→ [ADR-008: Observability](docs/adr/ADR-008-observability.md)
 
 ---
 
@@ -157,8 +154,7 @@ REST flow for creating and publishing a quiz. One tab as host, a few as players.
 .\tasks.ps1 kind-up                # cluster + data stores + Traefik + services + Prometheus/Grafana
 .\tasks.ps1 kind-obs               # Grafana 127.0.0.1:3001, Prometheus 127.0.0.1:9091
 ```
-The app is at `http://127.0.0.1:8000`. Sized for ~4–5 GB of Docker memory. → [ADR-009](docs/adr/ADR-009-local-kubernetes.md) ·
-[pod-deletion chaos run](docs/chaos-k8s.md)
+The app is at `http://127.0.0.1:8000`. Sized for ~4–5 GB of Docker memory. → [pod-deletion chaos run](docs/chaos-k8s.md)
 
 ### Load tests and benchmarks
 ```powershell
@@ -166,18 +162,35 @@ The app is at `http://127.0.0.1:8000`. Sized for ~4–5 GB of Docker memory. →
 .\tasks.ps1 bench                               # JMH microbenchmarks
 ```
 
+### On AWS (on demand)
+The AWS environment exists only while a demo runs: ECS Fargate (Spot, arm64) behind an ALB, RDS PostgreSQL,
+ElastiCache (Valkey) and Redpanda on ECS, with no NAT gateway. A long-lived bootstrap holds only the Terraform state,
+the image repositories and the GitHub deploy role. Estimated at $0.30–0.50 for a two-hour demo.
+
+```powershell
+.\tasks.ps1 push        # build arm64 images for ECR (prints the push commands)
+.\tasks.ps1 demo-up     # create the environment and start all services (~15 min), prints the URL
+.\tasks.ps1 demo-seed   # a host and a published quiz on the running demo
+.\tasks.ps1 demo-down   # destroy it, and fail if anything billable is left
+```
+
+CI builds, tests and scans every change (Trivy for image CVEs, gitleaks over the whole history). Deploys use GitHub
+OIDC: no AWS key is stored anywhere.
+
 ---
 
 ## Repository layout
 
 ```
 services/        gateway, identity-, quiz-, session-, scoring-service (one Maven module each)
-shared-events/   event records only (AnswerSubmitted, SessionStarted/Ended, ScoreUpdated), no Spring
+shared-events/   event records (AnswerSubmitted, SessionStarted/Ended, ScoreUpdated) and their topic/header names, no Spring
 benchmarks/      JMH benchmarks
 infra/local/     Prometheus, Grafana, alert rules (shared by compose and Kubernetes)
 infra/k8s/       kustomize base + kind overlay
+infra/terraform/ AWS: bootstrap (state, ECR, deploy role, budget), network and ECS modules, the demo environment
+.github/         CI (build, tests, image scan, secret scan) and the OIDC deploy workflow
 tools/           test client, REST flow scripts, k6 load test
-docs/            architecture decision records, performance, chaos procedures
+docs/            diagrams, performance, benchmarks, chaos procedures
 ```
 
 ## Engineering conventions
@@ -194,5 +207,8 @@ docs/            architecture decision records, performance, chaos procedures
 - [x] Observability (metrics, traces, dashboards, alerts)
 - [x] Local Kubernetes
 - [x] Load tests and the first bottleneck fix
-- [ ] AWS: Terraform (VPC, ECS Fargate, RDS, ElastiCache, MSK)
-- [ ] CI/CD: GitHub Actions with OIDC deploys
+- [x] CI: build, tests, image CVE scan, secret scan on every change
+- [x] AWS infrastructure in Terraform (VPC, ECS Fargate, ALB, RDS, ElastiCache, Redpanda on ECS or MSK), validated
+- [x] OIDC deploy role and deploy workflow with smoke test and rollback
+- [ ] First AWS demo run, with the measured cost per hour
+- [ ] Load test on AWS, and the next bottleneck (scoring throughput per session)

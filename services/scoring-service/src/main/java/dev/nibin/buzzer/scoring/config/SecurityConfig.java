@@ -19,7 +19,7 @@ import org.springframework.security.web.SecurityFilterChain;
 /**
  * scoring-service is an OAuth2 resource server, set up exactly like quiz- and session-service: every request carries
  * an RS256 access token from identity-service, verified here with identity's public key (fetched from its JWKS
- * endpoint). The gateway checked the token too, but this service never relies on that (ADR-002).
+ * endpoint). The gateway checked the token too, but this service never relies on that.
  */
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(JwtVerificationProperties.class)

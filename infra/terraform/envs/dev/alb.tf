@@ -1,7 +1,7 @@
 # The way in from the internet: an Application Load Balancer in the public subnets, plain HTTP on port 80.
-# HTTPS needs a certificate for a domain this project doesn't own yet (ADR-006: what changes for production).
+# HTTPS needs a certificate for a domain this project doesn't own yet.
 #
-# Everything goes to the gateway (ADR-002): routing, edge authentication, rate limits and CORS happen there, and the
+# Everything goes to the gateway: routing, edge authentication, rate limits and CORS happen there, and the
 # other four services are reachable only from the gateway and each other.
 
 resource "aws_security_group" "alb" {

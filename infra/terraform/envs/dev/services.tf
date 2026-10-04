@@ -73,7 +73,7 @@ locals {
       QUIZ_URI     = "http://quiz-service:8082"
       SESSION_URI  = "http://session-service:8083"
       SCORING_URI  = "http://scoring-service:8084"
-      # The ALB appends the client's address to X-Forwarded-For: exactly one proxy to trust (ADR-002).
+      # The ALB appends the client's address to X-Forwarded-For: exactly one proxy to trust.
       GATEWAY_CLIENTIP_TRUSTEDPROXIES = "1"
     }, var.load_test ? local.load_test_rate_limits : {})
     "identity-service" = {

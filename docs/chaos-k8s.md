@@ -10,7 +10,7 @@ The final scores must still be exactly right: **`MATCH`**, the same SQL check as
 - **A deleted pod is replaced by Kubernetes**, and the game carries on. Behind this: the Deployment, the probes, preStop + graceful shutdown.
 - **WebSocket players survive losing their pod.** The test client reconnects and redraws from `/state`, and live state is in Redis, not in the pod (3.3, 3.5).
 - **Players on another pod are unaffected**, because every broadcast goes through the Redis relay.
-- **The Kafka consumer group hands partitions over** when a scoring pod leaves, and back when the replacement joins. No answer is lost or counted twice (5.2, ADR-005).
+- **The Kafka consumer group hands partitions over** when a scoring pod leaves, and back when the replacement joins. No answer is lost or counted twice.
 - **Scaling by hand works both ways.** A new session pod gets broadcasts as soon as it's ready, and removing one moves its players.
 
 **What it doesn't prove**

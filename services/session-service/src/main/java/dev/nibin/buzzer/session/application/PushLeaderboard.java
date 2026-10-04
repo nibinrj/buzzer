@@ -12,7 +12,7 @@ import org.springframework.stereotype.Service;
  * Turns scoring-service's ScoreUpdated into a push to /topic/sessions/{id}/leaderboard, unless a newer leaderboard
  * was already pushed for that session.
  * <p>
- * A push is a notification (ADR-003: at-most-once). If Redis can't be reached, the update is logged and dropped,
+ * A push is a notification (at-most-once). If Redis can't be reached, the update is logged and dropped,
  * never retried: the next ScoreUpdated replaces it anyway, and a client can always ask scoring-service's
  * GET /api/results/sessions/{id}/leaderboard.
  */

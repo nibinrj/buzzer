@@ -42,7 +42,7 @@ variable "use_spot" {
 
 variable "cpu_architecture" {
   type        = string
-  description = "Task CPU architecture. ARM64 (Graviton) is cheaper and supported on Fargate Spot (ADR-006); the images must be built for it (tasks.ps1 push)."
+  description = "Task CPU architecture. ARM64 (Graviton) is cheaper and supported on Fargate Spot; the images must be built for it (tasks.ps1 push)."
   default     = "ARM64"
 
   validation {
