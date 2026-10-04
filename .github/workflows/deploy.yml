@@ -1,0 +1,235 @@
+# Deploy to the AWS demo without any stored AWS key (design and trade-offs: docs/adr/ADR-010-delivery-pipeline.md).
+#
+#   images  On every push to main: build the five arm64 images natively and push them to ECR, tagged with the short
+#           commit id. Tags already in ECR are skipped (the repositories are immutable). The next demo-up uses them.
+#   deploy  By hand (Actions → Deploy → Run workflow), only while a demo is up: point one ECS service at a new image,
+#           wait for the rollout, smoke-test through the load balancer, and roll back if anything fails.
+#
+# Credentials: the job trades GitHub's OIDC token for one-hour credentials of the bootstrap's deploy role
+# (infra/terraform/bootstrap/github-oidc.tf). The role trusts only pushes to main and jobs in the "dev" environment.
+#
+# One-time setup, after the bootstrap apply (Settings → Secrets and variables → Actions → Variables):
+#   AWS_DEPLOY_ROLE_ARN  the bootstrap output github_deploy_role_arn (an ARN is not a secret: it grants nothing alone)
+#   AWS_REGION           optional, defaults to ap-south-1
+# Until AWS_DEPLOY_ROLE_ARN exists, both jobs print a notice and succeed without touching AWS.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service to deploy
+        required: true
+        type: choice
+        options: [gateway, identity-service, quiz-service, session-service, scoring-service]
+      tag:
+        description: Image tag (short commit id). Empty = this commit; its image must already be in ECR.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # lets a job ask GitHub for an OIDC token; nothing else
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+  AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+  CLUSTER: buzzer-dev
+  REPOSITORY_PREFIX: buzzer
+
+jobs:
+  images:
+    name: Push images
+    if: github.event_name == 'push'
+    # Native arm64: the tasks run on Graviton. Free for public repositories, and no emulation.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    concurrency:
+      group: deploy-images
+      cancel-in-progress: false
+    steps:
+      - name: Is the deploy role configured?
+        id: configured
+        run: |
+          if [ -z "$AWS_DEPLOY_ROLE_ARN" ]; then
+            echo "::notice::AWS_DEPLOY_ROLE_ARN is not set: no images pushed. See the setup notes at the top of deploy.yml."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.configured.outputs.ready == 'true'
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        if: steps.configured.outputs.ready == 'true'
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: AWS CLI
+        if: steps.configured.outputs.ready == 'true'
+        run: |
+          if ! command -v aws > /dev/null; then
+            curl -sSfL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
+          fi
+          aws --version
+
+      - name: AWS credentials (OIDC, one hour)
+        if: steps.configured.outputs.ready == 'true'
+        run: |
+          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          creds=$(aws sts assume-role-with-web-identity --role-arn "$AWS_DEPLOY_ROLE_ARN" \
+            --role-session-name "github-$GITHUB_RUN_ID" --web-identity-token "$token" \
+            --duration-seconds 3600 --query Credentials --output json)
+          for key in AccessKeyId SecretAccessKey SessionToken; do echo "::add-mask::$(jq -r ".$key" <<< "$creds")"; done
+          {
+            echo "AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<< "$creds")"
+            echo "AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<< "$creds")"
+            echo "AWS_SESSION_TOKEN=$(jq -r .SessionToken <<< "$creds")"
+          } >> "$GITHUB_ENV"
+
+      # Tests already ran in ci.yml for this commit; this job only packages.
+      - name: Build jars
+        if: steps.configured.outputs.ready == 'true'
+        run: ./mvnw -B -ntp -DskipTests package
+
+      - name: Build and push images
+        if: steps.configured.outputs.ready == 'true'
+        run: |
+          tag="${GITHUB_SHA::7}"
+          account=$(cut -d: -f5 <<< "$AWS_DEPLOY_ROLE_ARN")
+          registry="$account.dkr.ecr.$AWS_REGION.amazonaws.com"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+          for service in $(ls services); do
+            repository="$REPOSITORY_PREFIX/$service"
+            if aws ecr describe-images --repository-name "$repository" --image-ids "imageTag=$tag" > /dev/null 2>&1; then
+              echo "$repository:$tag is already in ECR, skipped"
+              continue
+            fi
+            docker build --platform linux/arm64 \
+              --build-arg SERVICE="$service" --build-arg REVISION="$tag" \
+              --tag "$registry/$repository:$tag" .
+            docker push "$registry/$repository:$tag"
+          done
+          echo "::notice::Images $tag pushed. Next demo: .\\tasks.ps1 demo-up -Tag $tag"
+
+  deploy:
+    name: Deploy ${{ inputs.service }}
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # The OIDC token's subject becomes repo:<owner>/<repo>:environment:dev, which the deploy role trusts.
+    environment: dev
+    timeout-minutes: 30
+    concurrency:
+      group: deploy-${{ inputs.service }}
+      cancel-in-progress: false
+    env:
+      SERVICE: ${{ inputs.service }}
+    steps:
+      - name: Is the deploy role configured?
+        id: configured
+        run: |
+          if [ -z "$AWS_DEPLOY_ROLE_ARN" ]; then
+            echo "::notice::AWS_DEPLOY_ROLE_ARN is not set: nothing deployed. See the setup notes at the top of deploy.yml."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: AWS credentials (OIDC, one hour)
+        if: steps.configured.outputs.ready == 'true'
+        run: |
+          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          creds=$(aws sts assume-role-with-web-identity --role-arn "$AWS_DEPLOY_ROLE_ARN" \
+            --role-session-name "github-$GITHUB_RUN_ID" --web-identity-token "$token" \
+            --duration-seconds 3600 --query Credentials --output json)
+          for key in AccessKeyId SecretAccessKey SessionToken; do echo "::add-mask::$(jq -r ".$key" <<< "$creds")"; done
+          {
+            echo "AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<< "$creds")"
+            echo "AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<< "$creds")"
+            echo "AWS_SESSION_TOKEN=$(jq -r .SessionToken <<< "$creds")"
+          } >> "$GITHUB_ENV"
+
+      - name: Is a demo running?
+        id: demo
+        if: steps.configured.outputs.ready == 'true'
+        run: |
+          active=$(aws ecs describe-clusters --clusters "$CLUSTER" \
+            --query "clusters[?status=='ACTIVE'].clusterName" --output text)
+          if [ -z "$active" ]; then
+            echo "::notice::No $CLUSTER cluster: no demo is running, nothing to deploy. Images are pushed on every merge."
+            echo "up=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "up=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Register the new task definition revision
+        id: register
+        if: steps.demo.outputs.up == 'true'
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${INPUT_TAG:-${GITHUB_SHA::7}}"
+          if ! aws ecr describe-images --repository-name "$REPOSITORY_PREFIX/$SERVICE" --image-ids "imageTag=$tag" > /dev/null 2>&1; then
+            echo "::error::$REPOSITORY_PREFIX/$SERVICE:$tag is not in ECR. Push it first (merge to main, or tasks.ps1 push)."
+            exit 1
+          fi
+          previous=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+          # Copy the running definition, change only this service's image tag, drop the fields AWS sets itself.
+          aws ecs describe-task-definition --task-definition "$previous" --query taskDefinition --output json \
+            | jq --arg name "$SERVICE" --arg tag "$tag" '
+                .containerDefinitions |= map(if .name == $name then .image = ((.image | split(":")[0]) + ":" + $tag) else . end)
+                | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities,
+                      .registeredAt, .registeredBy, .deregisteredAt)' > task-definition.json
+          next=$(aws ecs register-task-definition --cli-input-json file://task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "Previous: $previous"
+          echo "Next:     $next ($tag)"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Roll out
+        id: rollout
+        if: steps.register.outputs.next != ''
+        env:
+          NEXT: ${{ steps.register.outputs.next }}
+        run: |
+          echo "started=true" >> "$GITHUB_OUTPUT"
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$NEXT" > /dev/null
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+          # "Stable" is also what ECS reports after its circuit breaker rolled back on its own: check which revision won.
+          read -r primary state <<< "$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query "services[0].deployments[?status=='PRIMARY'] | [0].[taskDefinition, rolloutState]" --output text)"
+          if [ "$primary" != "$NEXT" ] || [ "$state" != "COMPLETED" ]; then
+            echo "::error::Rollout didn't complete: primary is $primary ($state)."
+            exit 1
+          fi
+
+      # Only the gateway is public. For quiz, session and scoring, the check above (ECS ran the new revision to
+      # completion) is the deploy check; these two show the system still answers end to end.
+      - name: Smoke test through the load balancer
+        if: steps.register.outputs.next != ''
+        run: |
+          dns=$(aws elbv2 describe-load-balancers --names "$CLUSTER" --query 'LoadBalancers[0].DNSName' --output text)
+          curl -sSf --retry 5 --retry-delay 5 --retry-all-errors "http://$dns/readyz" > /dev/null
+          curl -sSf --retry 5 --retry-delay 5 --retry-all-errors "http://$dns/.well-known/jwks.json" | jq -e '.keys | length > 0' > /dev/null
+          echo "::notice::$SERVICE deployed: http://$dns answers /readyz and serves the JWKS."
+
+      - name: Roll back to the previous revision
+        if: failure() && steps.rollout.outputs.started == 'true'
+        env:
+          PREVIOUS: ${{ steps.register.outputs.previous }}
+        run: |
+          echo "::warning::Rolling $SERVICE back to $PREVIOUS"
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$PREVIOUS" > /dev/null
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
