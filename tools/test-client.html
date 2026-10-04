@@ -1,6 +1,7 @@
 <!doctype html>
 <!--
-  Buzzer test client: one tab = one user (host or player). No build step, no framework.
+  Buzzer demo client: one tab = one user (host or player). A minimal, framework-free client for exercising the
+  real-time API; the project is the backend. No build step.
   Serve it from http://localhost (file:// sends Origin "null", which the gateway and session-service refuse):
       & "$env:JAVA_HOME\bin\jwebserver.exe" -d (Resolve-Path .\tools).Path -p 5173
   (the JDK's own tiny web server, localhost only) then open http://localhost:5173/test-client.html
@@ -12,59 +13,131 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Buzzer test client</title>
+<title>Buzzer</title>
 <!-- Pinned version + SRI: the browser refuses the file if jsDelivr ever serves different bytes. Global: StompJs. -->
 <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.3.0/bundles/stomp.umd.min.js"
         integrity="sha384-KkPQpaFjaz1MHqHBmeMM+CCG394NFgCN2Rhe/3Mqnb6/acgNnoWTF54PGijUKRjf"
         crossorigin="anonymous"></script>
 <style>
   :root {
-    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #677084; --line: #d9dde5;
-    --accent: #2f6fde; --ok: #1f8a4c; --warn: #b7791f; --bad: #c53030; --log-bg: #11151c; --log-text: #d6dde8;
+    --bg: #f3f4f8; --panel: #ffffff; --text: #171c26; --muted: #646d80; --line: #dfe3ea; --soft: #f6f7fb;
+    --accent: #4f46e5; --accent-soft: #eef0ff; --ok: #15935a; --warn: #c27c0e; --bad: #d13a3a;
+    --a: #e5484d; --b: #3e63dd; --c: #e2a336; --d: #30a46c;
+    --log-bg: #0f131a; --log-text: #d6dde8; --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 4px 16px rgba(16, 24, 40, .06);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #12151b; --panel: #1b2029; --text: #e3e7ee; --muted: #9aa3b5; --line: #2d3442;
-      --accent: #6b9cff; --ok: #4cc27f; --warn: #e0a84a; --bad: #ff6b6b; --log-bg: #0b0e13; --log-text: #c9d2df;
+      --bg: #0f1218; --panel: #171b23; --text: #e6e9ef; --muted: #98a1b3; --line: #2a303c; --soft: #1d222c;
+      --accent: #8b85ff; --accent-soft: #23243d; --ok: #46c385; --warn: #e8ab4f; --bad: #ff6b6b;
+      --log-bg: #0a0d12; --log-text: #c9d2df; --shadow: none;
     }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 15px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--text); }
-  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 12px 16px;
-           background: var(--panel); border-bottom: 1px solid var(--line); }
-  header h1 { font-size: 17px; margin: 0 8px 0 0; }
-  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding: 16px; }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
-  h2 { font-size: 15px; margin: 0 0 10px; }
-  h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-  label { display: block; font-size: 13px; color: var(--muted); margin-top: 8px; }
-  input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px;
-          background: var(--bg); color: var(--text); width: 100%; }
-  header input { width: 240px; }
-  button { font: inherit; padding: 6px 12px; border: 1px solid var(--accent); border-radius: 5px;
-           background: var(--accent); color: #fff; cursor: pointer; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  button, input { font: inherit; }
+
+  /* header */
+  header { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 12px 20px;
+           background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 19px; letter-spacing: -.01em; margin-right: auto; }
+  .brand .dot { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; color: #fff;
+                background: linear-gradient(135deg, var(--accent), #db2777); font-size: 15px; }
+  .brand small { font-weight: 500; color: var(--muted); font-size: 13px; }
+  .segmented { display: inline-flex; background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+  .segmented label { cursor: pointer; position: relative; }
+  .segmented input { position: absolute; inset: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .segmented span { display: block; padding: 5px 14px; border-radius: 7px; color: var(--muted); font-weight: 600; font-size: 14px; }
+  .segmented input:checked + span { background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+  details.settings { position: relative; }
+  details.settings summary { list-style: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 6px 8px; border-radius: 8px; }
+  details.settings summary::-webkit-details-marker { display: none; }
+  details.settings[open] summary { background: var(--soft); }
+  details.settings .popover { position: absolute; right: 0; top: 38px; width: 320px; background: var(--panel);
+                              border: 1px solid var(--line); border-radius: 12px; padding: 12px; box-shadow: var(--shadow); }
+
+  /* layout */
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; padding: 18px 20px; max-width: 1240px; margin: 0 auto; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  .stack { display: grid; gap: 18px; align-content: start; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow); }
+  .card h2 { font-size: 13px; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+
+  /* forms */
+  label { display: block; font-size: 13px; color: var(--muted); }
+  label > input { display: block; margin-top: 4px; }
+  input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: var(--text); width: 100%; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { padding: 8px 14px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: #fff;
+           cursor: pointer; font-weight: 600; }
   button.secondary { background: transparent; color: var(--accent); }
-  button:disabled { opacity: .45; cursor: default; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-top: 8px; }
-  .row > label { flex: 1 1 180px; margin: 0; }
+  button.ghost { background: transparent; border-color: var(--line); color: var(--muted); font-weight: 500; }
+  button:disabled { opacity: .4; cursor: default; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 10px; }
+  .row > label { flex: 1 1 200px; }
   .hidden { display: none !important; }
   .muted { color: var(--muted); font-size: 13px; }
-  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; border: 1px solid; }
+  .error { color: var(--bad); font-size: 13px; min-height: 1.2em; margin-top: 8px; }
+
+  /* pills */
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px;
+          font-weight: 600; border: 1px solid var(--line); background: var(--soft); }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
   .pill.off { color: var(--muted); } .pill.on { color: var(--ok); } .pill.wait { color: var(--warn); }
-  .room { font: 700 34px/1.1 ui-monospace, monospace; letter-spacing: .12em; margin: 6px 0; }
-  .question { font-size: 19px; font-weight: 600; margin: 6px 0 10px; }
-  .countdown { font: 700 26px ui-monospace, monospace; }
+
+  /* host room code */
+  .roombox { margin-top: 14px; padding: 16px; border-radius: 12px; background: var(--accent-soft); text-align: center; }
+  .room { font: 800 44px/1.1 ui-monospace, "Cascadia Mono", monospace; letter-spacing: .18em; color: var(--accent); margin: 4px 0; }
+  .controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+  @media (max-width: 560px) { .controls { grid-template-columns: repeat(2, 1fr); } }
+
+  /* game stage */
+  .stage-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .stage-title { font-size: 17px; font-weight: 700; }
+  .status { font-size: 12px; font-weight: 700; letter-spacing: .05em; padding: 3px 10px; border-radius: 999px;
+            background: var(--soft); border: 1px solid var(--line); color: var(--muted); }
+  .empty { text-align: center; padding: 36px 10px; color: var(--muted); }
+  .empty .big { font-size: 40px; }
+  .qmeta { display: flex; justify-content: space-between; align-items: baseline; margin-top: 16px; }
+  .countdown { font: 800 24px ui-monospace, monospace; font-variant-numeric: tabular-nums; }
   .countdown.over { color: var(--bad); }
-  .options { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
-  .options button { background: transparent; color: var(--text); border-color: var(--line); padding: 12px; text-align: left; }
-  .options button.chosen { border-color: var(--accent); outline: 2px solid var(--accent); }
-  .options button.correct { border-color: var(--ok); outline: 2px solid var(--ok); }
-  .error { color: var(--bad); font-size: 13px; min-height: 1em; margin-top: 6px; }
-  ul.players { margin: 4px 0 0; padding-left: 18px; }
-  #log { grid-column: 1 / -1; }
-  #logLines { background: var(--log-bg); color: var(--log-text); font: 12px/1.4 ui-monospace, monospace;
-              height: 320px; overflow: auto; padding: 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; }
+  .bar { height: 8px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); overflow: hidden; margin-top: 8px; }
+  .bar > div { height: 100%; width: 100%; background: linear-gradient(90deg, var(--ok), var(--warn)); transition: width .1s linear; }
+  .bar.over > div { background: var(--bad); }
+  .question { font-size: 24px; font-weight: 700; line-height: 1.3; margin: 18px 0; }
+  .options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 560px) { .options { grid-template-columns: 1fr; } }
+  .options button { display: flex; align-items: center; gap: 12px; padding: 16px; min-height: 64px; text-align: left;
+                    background: var(--panel); color: var(--text); border: 2px solid var(--line); border-radius: 12px;
+                    font-size: 17px; font-weight: 600; transition: transform .05s, border-color .1s; }
+  .options button:not(:disabled):hover { border-color: var(--accent); transform: translateY(-1px); }
+  .options button:disabled { opacity: 1; }
+  .options .letter { flex: none; width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; color: #fff; font-weight: 800; }
+  .options button:nth-child(4n+1) .letter { background: var(--a); }
+  .options button:nth-child(4n+2) .letter { background: var(--b); }
+  .options button:nth-child(4n+3) .letter { background: var(--c); }
+  .options button:nth-child(4n+4) .letter { background: var(--d); }
+  .options button.chosen { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .options button.correct { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--panel));
+                            box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+  .options button.correct::after { content: "✓"; margin-left: auto; color: var(--ok); font-size: 22px; font-weight: 800; }
+  .options.revealed button:not(.correct) { opacity: .45; }
+  .note { margin-top: 14px; min-height: 1.5em; font-weight: 600; }
+
+  /* leaderboard + players */
+  ol.board { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  ol.board li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: var(--soft); }
+  ol.board .rank { flex: none; width: 28px; text-align: center; font-weight: 800; color: var(--muted); }
+  ol.board .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  ol.board .points { font-weight: 800; font-variant-numeric: tabular-nums; }
+  ol.board li.placeholder, ul.chips li.placeholder { background: none; color: var(--muted); font-size: 13px; padding: 4px 0; }
+  ul.chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  ul.chips li { padding: 4px 10px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); font-size: 13px; }
+
+  /* raw event log */
+  details.log { grid-column: 1 / -1; }
+  details.log summary { cursor: pointer; font-weight: 600; color: var(--muted); }
+  #logLines { background: var(--log-bg); color: var(--log-text); font: 12px/1.45 ui-monospace, monospace; margin-top: 10px;
+              height: 300px; overflow: auto; padding: 10px; border-radius: 10px; white-space: pre-wrap; word-break: break-all; }
   #logLines .out { color: #7fb2ff; } #logLines .in { color: #8fd694; } #logLines .err { color: #ff8a8a; }
   #logLines .rest { color: #e6c07b; }
 </style>
@@ -72,88 +145,109 @@
 <body>
 
 <header>
-  <h1>Buzzer test client</h1>
-  <label class="muted" style="margin:0">Base URL <input id="baseUrl" value="http://localhost:8080"></label>
-  <span>
-    <label class="muted" style="display:inline;margin:0"><input type="radio" name="role" value="host" checked style="width:auto"> Host</label>
-    <label class="muted" style="display:inline;margin:0 0 0 10px"><input type="radio" name="role" value="player" style="width:auto"> Player</label>
-  </span>
+  <div class="brand"><span class="dot">B</span> Buzzer <small>demo client</small></div>
+  <div class="segmented" role="radiogroup" aria-label="Role">
+    <label><input type="radio" name="role" value="host" checked><span>Host</span></label>
+    <label><input type="radio" name="role" value="player"><span>Player</span></label>
+  </div>
   <span id="conn" class="pill off">disconnected</span>
+  <details class="settings">
+    <summary title="Settings">⚙ Settings</summary>
+    <div class="popover">
+      <label>API base URL (the gateway) <input id="baseUrl" value="http://localhost:8080"></label>
+      <p class="muted" style="margin:8px 0 0">Local: http://localhost:8080 · kind: http://127.0.0.1:8000 · AWS: the ALB URL</p>
+    </div>
+  </details>
 </header>
 
 <main>
-  <!-- HOST -->
-  <section id="hostView">
-    <h2>Host</h2>
-    <div class="row">
-      <label>Email <input id="hostEmail" type="email" autocomplete="username"></label>
-      <label>Password <input id="hostPassword" type="password" autocomplete="current-password"></label>
-      <button id="hostLogin">Log in</button>
-    </div>
-    <div class="row">
-      <label>Published quiz id <input id="quizId" placeholder="00000000-0000-0000-0000-000000000000"></label>
-      <button id="createSession" disabled>Create session</button>
-    </div>
-    <div id="hostSession" class="hidden">
-      <h3>Room code</h3>
-      <div id="roomCode" class="room"></div>
-      <div class="muted">Session <span id="hostSessionId"></span></div>
+  <div class="stack">
+    <!-- HOST -->
+    <section id="hostView" class="card">
+      <h2>Host a game</h2>
       <div class="row">
-        <button data-command="start">start</button>
-        <button data-command="next">next</button>
-        <button data-command="reveal">reveal</button>
-        <button data-command="end">end</button>
-        <button id="hostRefresh" class="secondary">Reload state</button>
+        <label>Email <input id="hostEmail" type="email" autocomplete="username"></label>
+        <label>Password <input id="hostPassword" type="password" autocomplete="current-password"></label>
+        <button id="hostLogin">Log in</button>
       </div>
-    </div>
-    <div id="hostError" class="error"></div>
-  </section>
-
-  <!-- PLAYER -->
-  <section id="playerView" class="hidden">
-    <h2>Player</h2>
-    <div class="row">
-      <label>Nickname <input id="nickname" maxlength="20"></label>
-      <button id="guestLogin">Get guest token</button>
-    </div>
-    <div class="row">
-      <label>Room code <input id="joinCode" maxlength="6" style="text-transform:uppercase"></label>
-      <button id="joinSession" disabled>Join</button>
-      <button id="playerRefresh" class="secondary" disabled>Reload state</button>
-    </div>
-    <div id="playerError" class="error"></div>
-  </section>
-
-  <!-- GAME (both roles) -->
-  <section id="game">
-    <h2>Game <span id="gameTitle" class="muted"></span></h2>
-    <div>Status: <strong id="status">–</strong> <span id="progress" class="muted"></span></div>
-    <div id="questionBox" class="hidden">
-      <div class="row" style="justify-content:space-between;align-items:center">
-        <span class="muted" id="questionIndex"></span>
-        <span id="countdown" class="countdown"></span>
+      <div class="row">
+        <label>Published quiz id <input id="quizId" placeholder="00000000-0000-0000-0000-000000000000"></label>
+        <button id="createSession" disabled>Create session</button>
       </div>
-      <div id="questionText" class="question"></div>
-      <div id="options" class="options"></div>
-      <div id="answerNote" class="muted"></div>
-    </div>
-    <h3>Leaderboard <span id="leaderboardVersion" class="muted"></span></h3>
-    <ol id="leaderboard" class="players"><li class="muted">(no scores yet)</li></ol>
-    <h3>Players</h3>
-    <ul id="players" class="players"><li class="muted">(reload state to see the roster)</li></ul>
-  </section>
+      <div id="hostSession" class="hidden">
+        <div class="roombox">
+          <div class="muted">Players join with this code</div>
+          <div id="roomCode" class="room"></div>
+          <div class="muted">session <span id="hostSessionId"></span></div>
+        </div>
+        <div class="controls">
+          <button data-command="start">▶ Start</button>
+          <button data-command="next">⏭ Next</button>
+          <button data-command="reveal" class="secondary">👁 Reveal</button>
+          <button data-command="end" class="secondary">■ End</button>
+        </div>
+        <div class="row" style="justify-content:flex-end">
+          <button id="hostRefresh" class="ghost">↻ Reload state</button>
+        </div>
+      </div>
+      <div id="hostError" class="error"></div>
+    </section>
+
+    <!-- PLAYER -->
+    <section id="playerView" class="card hidden">
+      <h2>Join a game</h2>
+      <div class="row">
+        <label>Nickname <input id="nickname" maxlength="20"></label>
+        <button id="guestLogin">Get guest token</button>
+      </div>
+      <div class="row">
+        <label>Room code <input id="joinCode" maxlength="6" style="text-transform:uppercase;letter-spacing:.15em;font-weight:700"></label>
+        <button id="joinSession" disabled>Join</button>
+        <button id="playerRefresh" class="ghost" disabled>↻ Reload state</button>
+      </div>
+      <div id="playerError" class="error"></div>
+    </section>
+
+    <!-- GAME (both roles) -->
+    <section id="game" class="card">
+      <div class="stage-head">
+        <div class="stage-title">Game <span id="gameTitle" class="muted"></span></div>
+        <div><span id="progress" class="muted"></span> <span id="status" class="status">–</span></div>
+      </div>
+      <div id="waiting" class="empty"><div class="big">⏳</div>Waiting for the host to start a question…</div>
+      <div id="questionBox" class="hidden">
+        <div class="qmeta">
+          <span class="muted" id="questionIndex"></span>
+          <span id="countdown" class="countdown"></span>
+        </div>
+        <div id="countdownBar" class="bar"><div></div></div>
+        <div id="questionText" class="question"></div>
+        <div id="options" class="options"></div>
+        <div id="answerNote" class="note"></div>
+      </div>
+    </section>
+  </div>
+
+  <aside class="stack">
+    <section class="card">
+      <h2>Leaderboard <span id="leaderboardVersion" class="muted" style="text-transform:none;letter-spacing:0"></span></h2>
+      <ol id="leaderboard" class="board"><li class="placeholder">No scores yet</li></ol>
+    </section>
+    <section class="card">
+      <h2>Players</h2>
+      <ul id="players" class="chips"><li class="placeholder">Reload state to see the roster</li></ul>
+    </section>
+  </aside>
 
   <!-- LOG -->
-  <section id="log">
-    <div class="row" style="justify-content:space-between;align-items:center;margin:0 0 8px">
-      <h2 style="margin:0">Raw events</h2>
-      <span>
-        <label class="muted" style="display:inline;margin:0"><input id="verbose" type="checkbox" style="width:auto"> heartbeats and library chatter</label>
-        <button id="clearLog" class="secondary">Clear</button>
-      </span>
+  <details id="log" class="card log">
+    <summary>Raw events: REST calls and STOMP frames</summary>
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <label style="display:flex;gap:6px;align-items:center"><input id="verbose" type="checkbox" style="width:auto"> heartbeats and library chatter</label>
+      <button id="clearLog" class="ghost">Clear</button>
     </div>
     <div id="logLines"></div>
-  </section>
+  </details>
 </main>
 
 <script>
@@ -165,6 +259,7 @@ const state = {
   sessionId: null,
   stomp: null,          // StompJs.Client
   deadline: null,       // Date of the running question's deadline
+  total: null,          // ms between receiving the question and its deadline: the countdown bar's 100 %
   timer: null,
   questionId: null,     // the running question: what an answer is for
   names: new Map(),     // playerId -> displayName, from /state (the leaderboard carries ids only)
@@ -177,6 +272,12 @@ const state = {
 const $ = (id) => document.getElementById(id);
 const role = () => document.querySelector('input[name="role"]:checked').value;
 const base = () => $("baseUrl").value.trim().replace(/\/+$/, "");
+const el = (tag, className, text) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
 
 // ---------- log ----------
 /** Never let a token reach the screen: blank the Authorization header in anything logged. */
@@ -185,9 +286,7 @@ function redact(text) {
 }
 
 function log(kind, text) {
-  const line = document.createElement("div");
-  line.className = kind;
-  line.textContent = new Date().toISOString().substring(11, 23) + "  " + redact(text);
+  const line = el("div", kind, new Date().toISOString().substring(11, 23) + "  " + redact(text));
   const box = $("logLines");
   box.appendChild(line);
   while (box.childNodes.length > 800) box.removeChild(box.firstChild);
@@ -309,21 +408,26 @@ function showError(text) {
 }
 
 function showStatus(status) {
-  $("status").textContent = status;
+  $("status").textContent = status.replace("_", " ");
   if (status !== "IN_PROGRESS") hideQuestion();
+  $("waiting").firstElementChild.textContent = status === "ENDED" ? "🏁" : "⏳";
+  $("waiting").lastChild.textContent = status === "ENDED" ? "Game over. Final scores are on the leaderboard."
+      : "Waiting for the host to start a question…";
 }
 
 function showQuestion(q) {
   state.questionId = q.questionId;
+  $("waiting").classList.add("hidden");
   $("questionBox").classList.remove("hidden");
   $("questionIndex").textContent = "Question " + (q.index + 1);
   $("questionText").textContent = q.text;
   $("answerNote").textContent = "";
   const options = $("options");
+  options.classList.remove("revealed");
   options.replaceChildren();
   q.options.forEach((text, i) => {
-    const button = document.createElement("button");
-    button.textContent = String.fromCharCode(65 + i) + ". " + text;
+    const button = el("button");
+    button.append(el("span", "letter", String.fromCharCode(65 + i)), el("span", null, text));
     if (role() === "player") {
       button.addEventListener("click", () => choose(button, i));
     } else {
@@ -332,7 +436,7 @@ function showQuestion(q) {
     options.appendChild(button);
   });
   startCountdown(q.deadline);
-  $("status").textContent = "IN_PROGRESS";
+  $("status").textContent = "IN PROGRESS";
 }
 
 /**
@@ -346,7 +450,7 @@ function choose(button, index) {
   }
   document.querySelectorAll("#options button").forEach((b) => b.classList.remove("chosen"));
   button.classList.add("chosen");
-  $("answerNote").textContent = "Sent option " + String.fromCharCode(65 + index) + "…";
+  $("answerNote").textContent = "Sent " + String.fromCharCode(65 + index) + "…";
   state.stomp.publish({
     destination: `/app/sessions/${state.sessionId}/answer`,
     body: JSON.stringify({ questionId: state.questionId, optionId: index }),
@@ -357,20 +461,23 @@ function choose(button, index) {
 function showAck(ack) {
   if (ack.questionId !== state.questionId) return; // a late ack for an earlier question
   $("answerNote").textContent = ack.accepted
-    ? `Accepted: #${ack.seq} in line.`
-    : `Refused: ${ack.reason}` + (ack.seq ? ` (your first answer was #${ack.seq})` : "");
+    ? `✓ Accepted: #${ack.seq} in line`
+    : `✕ Refused: ${ack.reason}` + (ack.seq ? ` (your first answer was #${ack.seq})` : "");
 }
 
 /** The host revealed: mark the correct option. The question stays on screen, closed. */
 function showReveal(r) {
   if (r.questionId !== state.questionId) return;
+  $("options").classList.add("revealed");
   document.querySelectorAll("#options button").forEach((b, i) => {
     b.classList.toggle("correct", i === r.correctOption);
     b.disabled = true;
   });
-  $("answerNote").textContent += "  Correct: " + String.fromCharCode(65 + r.correctOption) + ".";
+  const note = $("answerNote").textContent;
+  $("answerNote").textContent = (note ? note + "  ·  " : "") + "Correct answer: " + String.fromCharCode(65 + r.correctOption);
   stopCountdown();
   $("countdown").textContent = "revealed";
+  $("countdownBar").firstElementChild.style.width = "0%";
 }
 
 /**
@@ -381,22 +488,21 @@ function showLeaderboard(board) {
   if (board.version < state.leaderboardVersion) return;
   state.leaderboardVersion = board.version;
   state.lastBoard = board;
-  $("leaderboardVersion").textContent = "v" + board.version;
+  $("leaderboardVersion").textContent = board.version >= 0 ? "v" + board.version : "";
   const list = $("leaderboard");
   list.replaceChildren();
   if (board.top.length === 0) {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "(no scores yet)";
-    list.appendChild(li);
+    list.appendChild(el("li", "placeholder", "No scores yet"));
   }
   let unknown = false;
   board.top.forEach((line) => {
     const name = state.names.get(line.playerId);
     unknown ||= !name;
-    const li = document.createElement("li");
-    li.value = line.rank; // ties share a rank: 1, 2, 2, 4
-    li.textContent = (name || "player " + line.playerId.substring(0, 8)) + " — " + line.points;
+    const medal = { 1: "🥇", 2: "🥈", 3: "🥉" }[line.rank]; // ties share a rank: 1, 2, 2, 4
+    const li = el("li");
+    li.append(el("span", "rank", medal || String(line.rank)),
+              el("span", "name", name || "player " + line.playerId.substring(0, 8)),
+              el("span", "points", String(line.points)));
     list.appendChild(li);
   });
   if (unknown && state.rosterAskedFor !== board.version) {
@@ -444,6 +550,7 @@ async function reloadLeaderboard() {
 
 function hideQuestion() {
   $("questionBox").classList.add("hidden");
+  $("waiting").classList.remove("hidden");
   stopCountdown();
 }
 
@@ -451,12 +558,16 @@ function hideQuestion() {
 function startCountdown(deadline) {
   stopCountdown();
   state.deadline = deadline ? new Date(deadline) : null;
+  state.total = state.deadline ? Math.max(1, state.deadline - Date.now()) : null;
   const tick = () => {
-    if (!state.deadline) { $("countdown").textContent = ""; return; }
+    const counter = $("countdown");
+    const bar = $("countdownBar");
+    if (!state.deadline) { counter.textContent = ""; bar.firstElementChild.style.width = "0%"; return; }
     const left = Math.max(0, state.deadline - Date.now());
-    const el = $("countdown");
-    el.textContent = (left / 1000).toFixed(1) + " s";
-    el.classList.toggle("over", left === 0);
+    counter.textContent = (left / 1000).toFixed(1) + " s";
+    counter.classList.toggle("over", left === 0);
+    bar.classList.toggle("over", left === 0);
+    bar.firstElementChild.style.width = (100 * Math.min(1, left / state.total)).toFixed(1) + "%";
   };
   tick();
   state.timer = setInterval(tick, 100);
@@ -472,16 +583,9 @@ function showPlayers(players) {
   const list = $("players");
   list.replaceChildren();
   if (players.length === 0) {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "(nobody yet)";
-    list.appendChild(li);
+    list.appendChild(el("li", "placeholder", "Nobody yet"));
   }
-  players.forEach((p) => {
-    const li = document.createElement("li");
-    li.textContent = p.displayName;
-    list.appendChild(li);
-  });
+  players.forEach((p) => list.appendChild(el("li", null, p.displayName)));
 }
 
 /** GET /state: the reconnect path. Redraws status, current question and roster from the server's truth. */
@@ -489,7 +593,7 @@ async function reloadState() {
   if (!state.sessionId) return;
   try {
     const s = await api("GET", `/api/sessions/${state.sessionId}/state`);
-    $("gameTitle").textContent = "— " + s.quizTitle + " (" + s.roomCode + ")";
+    $("gameTitle").textContent = "· " + s.quizTitle + " · " + s.roomCode;
     $("progress").textContent = s.questionCount + " questions";
     showStatus(s.status);
     if (s.currentQuestion) {
@@ -570,7 +674,6 @@ document.querySelectorAll('input[name="role"]').forEach((r) => r.addEventListene
   Object.assign(state, { token: null, sessionId: null, questionId: null, names: new Map(), leaderboardVersion: -1,
     lastBoard: null, rosterAskedFor: -1 });
   showLeaderboard({ version: -1, top: [] });
-  $("leaderboardVersion").textContent = "";
   $("hostView").classList.toggle("hidden", role() !== "host");
   $("playerView").classList.toggle("hidden", role() !== "player");
   $("createSession").disabled = true;
@@ -595,6 +698,7 @@ $("clearLog").addEventListener("click", () => $("logLines").replaceChildren());
 
 if (typeof StompJs === "undefined") {
   log("err", "The STOMP library did not load (offline, blocked CDN, or integrity mismatch).");
+  $("log").open = true;
 }
 </script>
 </body>
