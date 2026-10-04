@@ -39,6 +39,10 @@ public class SecurityConfig {
                         // Spring Boot forwards unhandled exceptions to /error. Without this, that forward
                         // is itself denied and a real 500 would reach the client as 401/403.
                         .requestMatchers("/error").permitAll()
+                        // API docs (springdoc): the OpenAPI document and Swagger UI. They describe endpoints, they don't
+                        // grant access to any; calls made from Swagger UI still need a valid token. Never routed by the
+                        // gateway, so only reachable on the service port itself.
+                        .requestMatchers("/v3/api-docs", "/v3/api-docs/**", "/swagger-ui.html", "/swagger-ui/**").permitAll()
                         // Any host or player may read any session's results: scoring knows membership ids, not
                         // user ids, so it can't check who played (see GetResults).
                         .requestMatchers(HttpMethod.GET, "/api/results/sessions/*/leaderboard",

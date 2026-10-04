@@ -19,6 +19,10 @@ quiz:
       jwk-set-uri: ${IDENTITY_JWKS_URI:http://localhost:8081/.well-known/jwks.json}
       issuer: buzzer-identity
 
+springdoc:
+  # The snapshot endpoint is service-to-service (session-service): left out of the public API document.
+  paths-to-exclude: /internal/**
+
 server:
   port: 8082
 
