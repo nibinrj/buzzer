@@ -44,3 +44,30 @@ variable "noncurrent_state_days" {
   description = "Days an overwritten state version is kept (S3 versioning), to recover from a bad apply."
   default     = 30
 }
+
+variable "github_repository" {
+  type        = string
+  description = "The GitHub repository (owner/name) whose workflows may assume the deploy role."
+  default     = "nibinrj/buzzer"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$", var.github_repository))
+    error_message = "github_repository must look like owner/name."
+  }
+}
+
+variable "monthly_budget_usd" {
+  type        = string
+  description = "Monthly spend (USD) that triggers the budget emails. A few demos a month stay well below 5."
+  default     = "5"
+}
+
+variable "budget_alert_email" {
+  type        = string
+  description = "Where the budget emails go. No default: set it in terraform.tfvars (gitignored), so no address is in the repo."
+
+  validation {
+    condition     = can(regex("^[^@ ]+@[^@ ]+[.][^@ ]+$", var.budget_alert_email))
+    error_message = "budget_alert_email must be an email address."
+  }
+}

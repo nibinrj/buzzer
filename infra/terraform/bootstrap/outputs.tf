@@ -17,3 +17,8 @@ output "ecr_repository_urls" {
   description = "Repository URL per service."
   value       = { for service, repository in aws_ecr_repository.service : service => repository.repository_url }
 }
+
+output "github_deploy_role_arn" {
+  description = "The role deploy.yml assumes through GitHub OIDC. Store it as the repository variable AWS_DEPLOY_ROLE_ARN (a variable, not a secret: an ARN grants nothing by itself)."
+  value       = aws_iam_role.deploy.arn
+}

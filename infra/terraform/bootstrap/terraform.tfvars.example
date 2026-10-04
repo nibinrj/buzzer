@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars (gitignored) in this directory:
+#   Copy-Item infra\terraform\bootstrap\terraform.tfvars.example infra\terraform\bootstrap\terraform.tfvars
+# Only budget_alert_email is required.
+
+# Where AWS Budgets sends the spend alerts (80% of the monthly limit reached, or forecast to pass it).
+budget_alert_email = "you@example.com"
+
+# Everything below shows the default.
+# region             = "ap-south-1"
+# monthly_budget_usd = "5"
+# github_repository  = "nibinrj/buzzer"   # whose workflows may assume the deploy role
+# images_to_keep     = 3                  # per ECR repository
