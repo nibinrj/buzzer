@@ -42,7 +42,7 @@ variable "use_spot" {
 
 variable "cpu_architecture" {
   type        = string
-  description = "Task CPU architecture. ARM64 (Graviton) is cheaper and supported on Fargate Spot (6.1); the images must be built for it (tasks.ps1 push)."
+  description = "Task CPU architecture. ARM64 (Graviton) is cheaper and supported on Fargate Spot (ADR-006); the images must be built for it (tasks.ps1 push)."
   default     = "ARM64"
 
   validation {
@@ -61,8 +61,72 @@ variable "image_tag" {
   }
 }
 
-variable "identity_desired_count" {
+variable "run_services" {
+  type        = bool
+  description = "false = create everything with the five services at 0 tasks. demo-up applies false first, runs the one-off database setup task, then applies true: the services' Flyway needs their roles and databases to exist."
+  default     = true
+}
+
+variable "session_min_count" {
   type        = number
-  description = "Running identity-service tasks. 0 until its database exists (Phase 7): without Postgres it can't start."
-  default     = 0
+  description = "session-service tasks at rest. 2: players are spread over two tasks, so every game shows the Redis broadcast relay at work."
+  default     = 2
+}
+
+variable "session_max_count" {
+  type        = number
+  description = "Most session-service tasks autoscaling may run (target: 60% average CPU)."
+  default     = 3
+
+  validation {
+    condition     = var.session_max_count >= var.session_min_count
+    error_message = "session_max_count must be at least session_min_count."
+  }
+}
+
+variable "kafka_mode" {
+  type        = string
+  description = "redpanda = one Redpanda task on ECS (cheap, minutes to create, data dies with the task). msk = Amazon MSK, 2 brokers (about 25 minutes to create, billed per broker-hour)."
+  default     = "redpanda"
+
+  validation {
+    condition     = contains(["redpanda", "msk"], var.kafka_mode)
+    error_message = "kafka_mode must be redpanda or msk."
+  }
+}
+
+variable "redpanda_image" {
+  type        = string
+  description = "Redpanda image: the same version docker-compose.yml runs locally. Multi-architecture (arm64 and amd64)."
+  default     = "docker.redpanda.com/redpandadata/redpanda:v26.2.3"
+}
+
+variable "msk_kafka_version" {
+  type        = string
+  description = "Apache Kafka version for MSK (kafka_mode = msk). Must be one MSK offers: aws kafka list-kafka-versions."
+  default     = "3.7.x"
+}
+
+variable "jwt_private_key_file" {
+  type        = string
+  description = "identity-service's PEM private key (PKCS#8). null = .secrets/jwt-private.pem at the repo root, where tasks.ps1 keys writes it. Its content goes to Secrets Manager only, never to the state."
+  default     = null
+}
+
+variable "jwt_public_key_file" {
+  type        = string
+  description = "identity-service's PEM public key. null = .secrets/jwt-public.pem at the repo root."
+  default     = null
+}
+
+variable "postgres_client_image" {
+  type        = string
+  description = "Image of the one-off database setup task: the official postgres:16 image (it has psql) from the ECR Public mirror of Docker's library, so Fargate pulls it without Docker Hub's rate limits."
+  default     = "public.ecr.aws/docker/library/postgres:16"
+}
+
+variable "load_test" {
+  type        = bool
+  description = "Raise the gateway's rate limits for a k6 run: every virtual user comes from the one machine running k6, i.e. one client IP. Same values as tools/load/run-game.ps1 uses locally. Never for a demo with real players."
+  default     = false
 }

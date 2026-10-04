@@ -99,8 +99,32 @@ variable "environment" {
 
 variable "secrets" {
   type        = map(string)
-  description = "Secret environment variables: name => Secrets Manager secret ARN. ECS reads them when the task starts; they never appear in the task definition."
+  description = "Secret environment variables: name => Secrets Manager secret ARN, optionally with a JSON key (<arn>:password::). ECS reads them when the task starts; their values never appear in the task definition."
   default     = {}
+}
+
+variable "service_connect_namespace" {
+  type        = string
+  description = "ARN of the Cloud Map namespace for ECS Service Connect, or null to stay out of it. Every service that calls or is called by another must be in it."
+  default     = null
+}
+
+variable "publish_service_connect" {
+  type        = bool
+  description = "With a namespace: make this service reachable by others at <name>:<container_port>. false = it only calls others (the gateway, which only the ALB reaches)."
+  default     = true
+}
+
+variable "command" {
+  type        = list(string)
+  description = "Container command, overriding the image's CMD. null = the image's own (the Spring Boot services)."
+  default     = null
+}
+
+variable "read_only_root_filesystem" {
+  type        = bool
+  description = "Mount the container's root filesystem read-only (/tmp stays writable). false only for a container that writes its data inside the image's filesystem."
+  default     = true
 }
 
 variable "log_retention_days" {

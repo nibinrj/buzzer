@@ -1,10 +1,15 @@
-# Copy to terraform.tfvars (gitignored) to avoid typing -var on every command. Only image_tag is required.
+# Copy to terraform.tfvars (gitignored) to avoid typing -var on every command. Only image_tag is required;
+# .\tasks.ps1 demo-up passes it (and run_services) itself.
 
 # The commit tasks.ps1 push built and pushed (it prints this value).
 image_tag = "0000000"
 
 # Everything below shows the default.
-# region                 = "ap-south-1"
-# use_spot               = true      # false = on-demand Fargate (e.g. while recording a demo)
-# cpu_architecture       = "ARM64"   # X86_64 needs images built with: .\tasks.ps1 push -Arch amd64
-# identity_desired_count = 0         # 1 once Phase 7 gives identity-service its database
+# region            = "ap-south-1"
+# use_spot          = true        # false = on-demand Fargate (e.g. while recording a demo)
+# cpu_architecture  = "ARM64"     # X86_64 needs images built with: .\tasks.ps1 push -Arch amd64
+# run_services      = true        # demo-up applies false first, runs the database setup task, then true
+# session_min_count = 2
+# session_max_count = 3
+# kafka_mode        = "redpanda"  # "msk": Amazon MSK, ~25 min to create, billed per broker-hour
+# load_test         = false       # true: gateway rate limits raised for a k6 run (one client IP)

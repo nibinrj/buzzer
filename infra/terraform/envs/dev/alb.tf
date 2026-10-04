@@ -1,8 +1,8 @@
 # The way in from the internet: an Application Load Balancer in the public subnets, plain HTTP on port 80.
 # HTTPS needs a certificate for a domain this project doesn't own yet (ADR-006: what changes for production).
 #
-# Phase 6 forwards everything to identity-service, the only service so far. Phase 7 points the listener at the
-# gateway instead, and identity-service goes back to being reachable through the gateway only.
+# Everything goes to the gateway (ADR-002): routing, edge authentication, rate limits and CORS happen there, and the
+# other four services are reachable only from the gateway and each other.
 
 resource "aws_security_group" "alb" {
   name        = "${local.name}-alb"
@@ -23,14 +23,14 @@ resource "aws_vpc_security_group_ingress_rule" "alb_http" {
   description       = "HTTP from anywhere"
 }
 
-# Out: only to the identity tasks, only on their port. Each service the ALB forwards to gets a rule like this.
-resource "aws_vpc_security_group_egress_rule" "alb_to_identity" {
+# Out: only to the gateway tasks, only on their port.
+resource "aws_vpc_security_group_egress_rule" "alb_to_gateway" {
   security_group_id            = aws_security_group.alb.id
-  referenced_security_group_id = module.identity.security_group_id
+  referenced_security_group_id = module.service["gateway"].security_group_id
   ip_protocol                  = "tcp"
-  from_port                    = 8081
-  to_port                      = 8081
-  description                  = "To identity-service tasks"
+  from_port                    = 8080
+  to_port                      = 8080
+  description                  = "To gateway tasks"
 }
 
 resource "aws_lb" "this" {
@@ -40,8 +40,9 @@ resource "aws_lb" "this" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = module.network.public_subnet_ids
 
-  # Seconds a connection may sit with no traffic. STOMP heart-beats every 10 s keep WebSockets well inside it.
-  idle_timeout = 60
+  # Seconds a connection may sit with no traffic before the ALB closes it. Browsers' STOMP heart-beats (every 10 s)
+  # keep a WebSocket well inside it; 120 s also covers a client that only listens, without heart-beats.
+  idle_timeout = 120
 
   # Requests with malformed headers are dropped at the edge, not passed on to the services.
   drop_invalid_header_fields = true
@@ -50,9 +51,9 @@ resource "aws_lb" "this" {
   enable_deletion_protection = false
 }
 
-resource "aws_lb_target_group" "identity" {
-  name        = "${local.name}-identity"
-  port        = 8081
+resource "aws_lb_target_group" "gateway" {
+  name        = "${local.name}-gateway"
+  port        = 8080
   protocol    = "HTTP"
   target_type = "ip" # Fargate tasks are registered by their IP (awsvpc), not by instance
   vpc_id      = module.network.vpc_id
@@ -60,7 +61,7 @@ resource "aws_lb_target_group" "identity" {
   # How long a stopping task keeps its open connections before the ALB cuts them (ECS's stand-in for preStop).
   deregistration_delay = 30
 
-  # /readyz on the service port (K.3b): UP only when the service can take traffic.
+  # /readyz on the service port (not the management port): UP only when the service can take traffic.
   health_check {
     path                = "/readyz"
     matcher             = "200"
@@ -71,6 +72,7 @@ resource "aws_lb_target_group" "identity" {
   }
 }
 
+# WebSockets need nothing special here: the ALB passes an HTTP/1.1 Upgrade through on a plain HTTP listener.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.this.arn
   port              = 80
@@ -78,6 +80,6 @@ resource "aws_lb_listener" "http" {
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.identity.arn
+    target_group_arn = aws_lb_target_group.gateway.arn
   }
 }

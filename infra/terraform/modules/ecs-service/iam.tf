@@ -37,13 +37,17 @@ resource "aws_iam_role_policy_attachment" "execution" {
 }
 
 # Read access to this service's own secrets, and nothing else. Created only when the service has secrets
-# (for_each over a map with one or zero entries: CLAUDE.md prefers for_each to count).
+# (for_each over a map with one or zero entries: this repo uses for_each rather than count).
 data "aws_iam_policy_document" "read_secrets" {
   for_each = length(var.secrets) > 0 ? { secrets = true } : {}
 
   statement {
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = distinct(values(var.secrets))
+    actions = ["secretsmanager:GetSecretValue"]
+    # A reference may name one JSON key of a secret (<secret arn>:password::); IAM wants the secret's own ARN, which
+    # ends at its name: arn:aws:secretsmanager:<region>:<account>:secret:<name>.
+    resources = distinct([
+      for reference in values(var.secrets) : regex("^arn:[^:]+:secretsmanager:[^:]+:[0-9]+:secret:[^:]+", reference)
+    ])
   }
 }
 
