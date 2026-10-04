@@ -1,0 +1,472 @@
+asyncapi: 3.0.0
+info:
+  title: Buzzer real-time and event API
+  version: 1.0.0
+  description: |
+    Everything in Buzzer that isn't request/response REST (the REST APIs are in each service's OpenAPI document,
+    /v3/api-docs and /swagger-ui.html on the service port).
+
+    **STOMP over WebSocket** (`/ws` through the gateway): how a live game runs. The host sends commands, every player
+    in the session gets the question, the reveal and the leaderboard at the same moment, and each player gets a
+    private acknowledgement for their own answer. The access token travels in the STOMP CONNECT frame (a browser
+    can't add a header to the WebSocket handshake); every SUBSCRIBE and SEND is then authorized per destination.
+
+    **Kafka**: what happens after an answer is accepted. session-service writes each event to an outbox table in the
+    same transaction as the answer and publishes it from there; scoring-service applies it exactly once
+    (at-least-once delivery + a processed-events table) and publishes the new leaderboard, which session-service
+    pushes to the players. Every topic is keyed by sessionId, so one session's events stay in order.
+
+    Broadcasts reach players on every session-service instance through an internal Redis pub/sub relay; that relay is
+    an implementation detail, not part of this contract.
+
+servers:
+  gateway:
+    host: localhost:8080
+    pathname: /ws
+    protocol: stomp
+    protocolVersion: '1.2'
+    description: >-
+      STOMP 1.2 over WebSocket, through the gateway (locally :8080, on kind 127.0.0.1:8000, in AWS the load balancer).
+      CONNECT header `Authorization: Bearer <access token>`. Heart-beats 10 s both ways.
+    security:
+      - $ref: '#/components/securitySchemes/bearer'
+  kafka:
+    host: localhost:9092
+    protocol: kafka
+    description: >-
+      Redpanda locally and on kind (Kafka API), Redpanda on ECS or MSK in AWS. Internal only: no client outside the
+      services connects to it.
+
+channels:
+  # ---------------------------------------------------------------- STOMP: host commands
+  hostCommand:
+    address: /app/sessions/{sessionId}/{command}
+    title: Host commands
+    description: >-
+      Sent by the session's host only (anyone else's SEND is refused). Empty body. A command that can't be applied
+      (for example `next` after the last question) is answered on the host's private errors queue.
+    parameters:
+      sessionId:
+        description: The session id returned by POST /api/sessions.
+      command:
+        enum: [start, next, reveal, end]
+        description: >-
+          start = leave the lobby and show the first question; next = the next question; reveal = close the running
+          question and show its correct option; end = finish the session.
+    servers:
+      - $ref: '#/servers/gateway'
+    messages:
+      emptyCommand:
+        $ref: '#/components/messages/EmptyCommand'
+
+  answer:
+    address: /app/sessions/{sessionId}/answer
+    title: Player answers
+    description: >-
+      Sent by a player who joined the session. The buzz race is decided here: one atomic Redis Lua script checks the
+      question is open and the deadline (Redis's own clock) hasn't passed, rejects a second answer from the same
+      player, and assigns a global place in line and, for correct answers, a correct rank. Every answer gets exactly
+      one reply on /user/queue/answer-ack, on the connection that sent it.
+    parameters:
+      sessionId:
+        description: The session id returned by POST /api/sessions/join.
+    servers:
+      - $ref: '#/servers/gateway'
+    messages:
+      answerRequest:
+        $ref: '#/components/messages/AnswerRequest'
+
+  # ---------------------------------------------------------------- STOMP: broadcasts (host + joined players)
+  question:
+    address: /topic/sessions/{sessionId}/question
+    title: Question shown
+    description: The running question, without its correct option. Sent on start and on every next.
+    parameters:
+      sessionId:
+        description: The session id.
+    servers:
+      - $ref: '#/servers/gateway'
+    messages:
+      questionShown:
+        $ref: '#/components/messages/QuestionShown'
+
+  status:
+    address: /topic/sessions/{sessionId}/status
+    title: Session status
+    parameters:
+      sessionId:
+        description: The session id.
+    servers:
+      - $ref: '#/servers/gateway'
+    messages:
+      statusChanged:
+        $ref: '#/components/messages/StatusChanged'
+
+  reveal:
+    address: /topic/sessions/{sessionId}/reveal
+    title: Answer revealed
+    description: The host closed the question; it takes no more answers. Carries its correct option.
+    parameters:
+      sessionId:
+        description: The session id.
+    servers:
+      - $ref: '#/servers/gateway'
+    messages:
+      answerRevealed:
+        $ref: '#/components/messages/AnswerRevealed'
+
+  leaderboard:
+    address: /topic/sessions/{sessionId}/leaderboard
+    title: Live leaderboard
+    description: >-
+      scoring-service's latest top 10, pushed by session-service when a ScoreUpdated event arrives. `version` only
+      grows: a client that also fetched GET /api/results/sessions/{sessionId}/leaderboard keeps whichever is newer.
+      A push is a notification (at most once); a reconnecting client reloads state and the leaderboard over REST.
+    parameters:
+      sessionId:
+        description: The session id.
+    servers:
+      - $ref: '#/servers/gateway'
+    messages:
+      leaderboardChanged:
+        $ref: '#/components/messages/LeaderboardChanged'
+
+  # ---------------------------------------------------------------- STOMP: private replies (sender only)
+  answerAck:
+    address: /user/queue/answer-ack
+    title: Answer acknowledgement
+    description: >-
+      The verdict on this connection's answer. It says nothing about correctness: that comes with the reveal.
+    servers:
+      - $ref: '#/servers/gateway'
+    messages:
+      answerAck:
+        $ref: '#/components/messages/AnswerAck'
+
+  errors:
+    address: /user/queue/errors
+    title: Command errors
+    description: A command or answer that couldn't be processed at all (unreadable, not allowed in this state).
+    servers:
+      - $ref: '#/servers/gateway'
+    messages:
+      commandError:
+        $ref: '#/components/messages/CommandError'
+
+  # ---------------------------------------------------------------- Kafka
+  answerSubmitted:
+    address: session.answer-submitted
+    title: Answer submitted
+    description: >-
+      Produced by session-service (from its outbox) for every accepted and recorded answer; consumed by
+      scoring-service. Key = sessionId. 3 partitions. Failed records are retried on
+      `session.answer-submitted-retry-1000` and `-retry-2000`, then parked on `session.answer-submitted-dlt`
+      (alerted on; drained by hand).
+    servers:
+      - $ref: '#/servers/kafka'
+    messages:
+      answerSubmitted:
+        $ref: '#/components/messages/AnswerSubmitted'
+
+  sessionLifecycle:
+    address: session.lifecycle
+    title: Session lifecycle
+    description: >-
+      Produced by session-service (from its outbox) when a session starts and ends; consumed by scoring-service.
+      Both types share one topic so a session's start and end stay in order (same key, same partition); the
+      `eventType` header says which record the value is. Same retry and DLT topics as above
+      (`session.lifecycle-retry-1000`, `-retry-2000`, `-dlt`).
+    servers:
+      - $ref: '#/servers/kafka'
+    messages:
+      sessionStarted:
+        $ref: '#/components/messages/SessionStarted'
+      sessionEnded:
+        $ref: '#/components/messages/SessionEnded'
+
+  scoreUpdated:
+    address: scoring.score-updated
+    title: Score updated
+    description: >-
+      Produced by scoring-service when a session's top 10 changes; consumed by session-service, which pushes it to
+      /topic/sessions/{sessionId}/leaderboard. Key = sessionId.
+    servers:
+      - $ref: '#/servers/kafka'
+    messages:
+      scoreUpdated:
+        $ref: '#/components/messages/ScoreUpdated'
+
+operations:
+  # From the backend's point of view: what it receives from clients and what it sends to them or to Kafka.
+  receiveHostCommand:
+    action: receive
+    channel:
+      $ref: '#/channels/hostCommand'
+    summary: The host drives the game.
+  receiveAnswer:
+    action: receive
+    channel:
+      $ref: '#/channels/answer'
+    summary: A player buzzes.
+    reply:
+      channel:
+        $ref: '#/channels/answerAck'
+  sendQuestion:
+    action: send
+    channel:
+      $ref: '#/channels/question'
+  sendStatus:
+    action: send
+    channel:
+      $ref: '#/channels/status'
+  sendReveal:
+    action: send
+    channel:
+      $ref: '#/channels/reveal'
+  sendLeaderboard:
+    action: send
+    channel:
+      $ref: '#/channels/leaderboard'
+  sendError:
+    action: send
+    channel:
+      $ref: '#/channels/errors'
+  publishAnswerSubmitted:
+    action: send
+    channel:
+      $ref: '#/channels/answerSubmitted'
+    summary: session-service → Kafka, through the transactional outbox.
+  publishSessionLifecycle:
+    action: send
+    channel:
+      $ref: '#/channels/sessionLifecycle'
+    summary: session-service → Kafka, through the transactional outbox.
+  consumeScoringInputs:
+    action: receive
+    channel:
+      $ref: '#/channels/answerSubmitted'
+    summary: scoring-service applies each answer once (consumer group scoring-service, ack after commit).
+  consumeLifecycle:
+    action: receive
+    channel:
+      $ref: '#/channels/sessionLifecycle'
+    summary: scoring-service opens and closes a session's results.
+  publishScoreUpdated:
+    action: send
+    channel:
+      $ref: '#/channels/scoreUpdated'
+    summary: scoring-service → Kafka.
+  consumeScoreUpdated:
+    action: receive
+    channel:
+      $ref: '#/channels/scoreUpdated'
+    summary: session-service relays the new top 10 to the players.
+
+components:
+  securitySchemes:
+    bearer:
+      type: httpApiKey
+      name: Authorization
+      in: header
+      description: >-
+        `Bearer <access token>` from identity-service, in the STOMP CONNECT frame's headers. HOST tokens may send host
+        commands; PLAYER (guest) tokens may answer. Subscriptions are limited to the session's host and joined players.
+
+  messageTraits:
+    kafkaEvent:
+      headers:
+        type: object
+        properties:
+          eventType:
+            type: string
+            description: The event's record type (simple class name), e.g. "AnswerSubmitted".
+          traceparent:
+            type: string
+            description: W3C trace context, so one answer is one trace from the gateway to scoring.
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: sessionId
+
+  messages:
+    EmptyCommand:
+      name: EmptyCommand
+      summary: A host command has no body.
+      payload:
+        type: string
+        maxLength: 0
+
+    AnswerRequest:
+      name: AnswerRequest
+      payload:
+        type: object
+        required: [questionId, optionId]
+        properties:
+          questionId:
+            type: string
+            format: uuid
+            description: The running question (from QuestionShown). Another id is refused as WRONG_QUESTION.
+          optionId:
+            type: integer
+            minimum: 0
+            description: The chosen option's index in QuestionShown.options.
+        examples:
+          - questionId: 3f0b6a8e-2d6c-4f3e-9a51-0d8f4c1b2a77
+            optionId: 1
+
+    QuestionShown:
+      name: QuestionShown
+      payload:
+        type: object
+        properties:
+          sessionId: { type: string, format: uuid }
+          index: { type: integer, minimum: 0, description: 0-based position of the question in the quiz }
+          questionId: { type: string, format: uuid }
+          text: { type: string }
+          timeLimitSeconds: { type: integer, minimum: 5, maximum: 60 }
+          options:
+            type: array
+            minItems: 2
+            maxItems: 6
+            items: { type: string }
+            description: Addressed by index. The correct one is not marked.
+          deadline: { type: string, format: date-time, description: By Redis's clock; answers after it are LATE }
+
+    StatusChanged:
+      name: StatusChanged
+      payload:
+        type: object
+        properties:
+          sessionId: { type: string, format: uuid }
+          status: { type: string, enum: [LOBBY, IN_PROGRESS, ENDED] }
+
+    AnswerRevealed:
+      name: AnswerRevealed
+      payload:
+        type: object
+        properties:
+          sessionId: { type: string, format: uuid }
+          index: { type: integer, minimum: 0 }
+          questionId: { type: string, format: uuid }
+          correctOption: { type: integer, minimum: 0, description: Index into the question's options }
+
+    LeaderboardChanged:
+      name: LeaderboardChanged
+      payload:
+        type: object
+        properties:
+          sessionId: { type: string, format: uuid }
+          version: { type: integer, description: Only grows; keep the newest }
+          top:
+            type: array
+            maxItems: 10
+            items:
+              $ref: '#/components/schemas/LeaderboardLine'
+
+    AnswerAck:
+      name: AnswerAck
+      payload:
+        type: object
+        properties:
+          questionId: { type: string, format: uuid }
+          accepted: { type: boolean }
+          reason:
+            type: [string, 'null']
+            enum: [DUPLICATE, LATE, CLOSED, WRONG_QUESTION, NOT_RUNNING, INVALID, NOT_RECORDED, null]
+            description: >-
+              null when accepted. NOT_RECORDED = Redis accepted it but Postgres failed to record it (a known gap: the
+              answer then counts nowhere, so scores stay consistent).
+          seq:
+            type: [integer, 'null']
+            description: The place in line when accepted, the first answer's place when DUPLICATE, otherwise null.
+        examples:
+          - questionId: 3f0b6a8e-2d6c-4f3e-9a51-0d8f4c1b2a77
+            accepted: true
+            reason: null
+            seq: 3
+
+    CommandError:
+      name: CommandError
+      payload:
+        type: object
+        properties:
+          title: { type: string }
+          detail: { type: string }
+
+    AnswerSubmitted:
+      name: AnswerSubmitted
+      traits:
+        - $ref: '#/components/messageTraits/kafkaEvent'
+      payload:
+        type: object
+        properties:
+          eventId: { type: string, format: uuid, description: Deduplication key in scoring-service }
+          sessionId: { type: string, format: uuid }
+          questionId: { type: string, format: uuid }
+          playerId: { type: string, format: uuid }
+          optionId: { type: integer, minimum: 0 }
+          correct: { type: boolean }
+          correctRank:
+            type: integer
+            description: >-
+              Rank among this question's correct answers (1 = first correct), fixed when the answer was accepted, so
+              the consumer doesn't depend on arrival order. Only meaningful when correct is true.
+          seq: { type: integer, description: Global place in line for this question }
+          answeredAtMs: { type: integer, description: Epoch milliseconds (Redis clock) }
+          schemaVersion: { type: integer, const: 1 }
+
+    SessionStarted:
+      name: SessionStarted
+      traits:
+        - $ref: '#/components/messageTraits/kafkaEvent'
+      payload:
+        type: object
+        properties:
+          eventId: { type: string, format: uuid }
+          sessionId: { type: string, format: uuid }
+          quizId: { type: string, format: uuid }
+          hostId: { type: string, format: uuid }
+          questionCount: { type: integer, minimum: 1 }
+          startedAtMs: { type: integer }
+          schemaVersion: { type: integer, const: 1 }
+
+    SessionEnded:
+      name: SessionEnded
+      traits:
+        - $ref: '#/components/messageTraits/kafkaEvent'
+      payload:
+        type: object
+        properties:
+          eventId: { type: string, format: uuid }
+          sessionId: { type: string, format: uuid }
+          endedAtMs: { type: integer }
+          schemaVersion: { type: integer, const: 1 }
+
+    ScoreUpdated:
+      name: ScoreUpdated
+      traits:
+        - $ref: '#/components/messageTraits/kafkaEvent'
+      payload:
+        type: object
+        properties:
+          eventId: { type: string, format: uuid }
+          sessionId: { type: string, format: uuid }
+          top10:
+            type: array
+            maxItems: 10
+            items:
+              $ref: '#/components/schemas/LeaderboardLine'
+          version: { type: integer, description: Only grows; consumers drop older versions }
+          schemaVersion: { type: integer, const: 1 }
+
+  schemas:
+    LeaderboardLine:
+      type: object
+      properties:
+        rank: { type: integer, minimum: 1, description: Ties share a rank (1, 2, 2, 4) }
+        playerId: { type: string, format: uuid, description: Membership id; names come from GET /state }
+        points:
+          type: integer
+          description: Sum over correct answers of max(300, 1000 − 100 × (correctRank − 1))

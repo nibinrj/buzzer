@@ -9,9 +9,12 @@ It's built as a set of microservices to work through the hard parts of distribut
 concurrency, exactly-right scores over at-least-once messaging, fan-out across instances, and finding the real
 bottleneck under load.
 
+<!-- Demo: record a 60–90 s GIF (host + 3 players, a pod deleted mid-question, Grafana, a Jaeger trace), save it as
+     docs/demo.gif, and replace this comment with: ![Buzzer demo](docs/demo.gif) -->
+
 **Stack:** Java 21 · Spring Boot 4.1 · Spring Cloud Gateway 2025.1 · WebSocket/STOMP · Kafka (Redpanda) · Redis ·
 PostgreSQL 16 · Flyway · Testcontainers · OpenTelemetry · Prometheus · Grafana · Jaeger · Kubernetes (kind) · k6 · JMH ·
-Terraform · AWS (ECS Fargate, RDS, ElastiCache) · GitHub Actions
+Terraform · AWS (ECS Fargate, RDS, ElastiCache) · GitHub Actions · OpenAPI · AsyncAPI
 
 ---
 
@@ -138,8 +141,17 @@ Run each service in its own terminal (identity first, it serves the JWKS):
 
 Optional dashboards: `.\tasks.ps1 obs` → Grafana `:3000`, Prometheus `:9090`, Jaeger `:16686`.
 
+### API docs
+- **REST:** each service serves its OpenAPI document and Swagger UI on its own port, without a token:
+  `http://localhost:8081/swagger-ui.html` (identity), `:8082` (quiz), `:8083` (session), `:8084` (scoring). Log in
+  through identity, then paste the access token into **Authorize**. The gateway doesn't route the docs.
+- **Real-time and events:** [docs/asyncapi.yaml](docs/asyncapi.yaml) (AsyncAPI 3.0) describes the STOMP
+  destinations (host commands, answers, broadcasts, private acks) and the Kafka topics with their keys, headers,
+  retry and dead-letter topics. Paste it into [AsyncAPI Studio](https://studio.asyncapi.com) to browse it.
+
 ### Play a game
-The test client is a single HTML file with no build step. Serve it from localhost (the gateway refuses `file://`):
+`tools/test-client.html` is a minimal, framework-free demo client for exercising the real-time API; the project is
+the backend. One HTML file, no build step. Serve it from localhost (the gateway refuses `file://`):
 
 ```powershell
 & "$env:JAVA_HOME\bin\jwebserver.exe" -d (Resolve-Path .\tools).Path -p 5173
@@ -189,8 +201,8 @@ infra/local/     Prometheus, Grafana, alert rules (shared by compose and Kuberne
 infra/k8s/       kustomize base + kind overlay
 infra/terraform/ AWS: bootstrap (state, ECR, deploy role, budget), network and ECS modules, the demo environment
 .github/         CI (build, tests, image scan, secret scan) and the OIDC deploy workflow
-tools/           test client, REST flow scripts, k6 load test
-docs/            diagrams, performance, benchmarks, chaos procedures
+tools/           demo client, REST flow scripts, k6 load test
+docs/            AsyncAPI spec, diagrams, performance, benchmarks, chaos procedures
 ```
 
 ## Engineering conventions
