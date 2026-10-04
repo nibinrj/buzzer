@@ -13,7 +13,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'up', 'obs', 'down', 'nuke', 'build', 'test', 'run', 'health', 'logs', 'keys', 'images',
-        'kind-up', 'kind-obs', 'kind-down', 'bench', 'push')]
+        'kind-up', 'kind-obs', 'kind-down', 'bench', 'push', 'demo-up', 'demo-down', 'demo-seed')]
     [string] $Task = 'help',
 
     [string] $Svc,
@@ -26,7 +26,10 @@ param(
 
     # push only: the CPU the ECS tasks run on. arm64 matches envs/dev's default cpu_architecture (ARM64).
     [ValidateSet('arm64', 'amd64')]
-    [string] $Arch = 'arm64'
+    [string] $Arch = 'arm64',
+
+    # demo-up / demo-down only: the image tag (commit) to deploy. Default: the current commit, as push tags it.
+    [string] $Tag
 )
 
 Set-StrictMode -Version Latest
@@ -118,6 +121,11 @@ Usage: .\tasks.ps1 <task> [-Svc <name>]
            One group only: .\tasks.ps1 bench -Only EventReader. JSON results: benchmarks\target\jmh-result.json
   push     Build the ECS images (linux/arm64; -Arch amd64 for X86_64 tasks), tagged with the commit and named for the
            bootstrap's ECR repositories. Prints the ECR login, docker push and terraform apply commands; never pushes.
+  demo-up    Create the AWS demo (envs/dev) and start it: apply without the services, run the one-off database setup
+             task, apply with the services, wait until every ECS service is stable. Prints the URL and the time taken.
+             Deploys the current commit's images (push them first) or -Tag <commit>. Terraform asks before each apply.
+  demo-down  Destroy the AWS demo, then fail loudly if anything tagged Project=buzzer, Stack=dev is still there.
+  demo-seed  A host account and a published quiz on the running demo (tools\http\chaos-game.ps1 against its URL).
 '@
 }
 
@@ -183,6 +191,25 @@ function Set-KindSecret([string] $Name, [hashtable] $DotEnv, [string[]] $Keys, [
 }
 
 $mvnw = Join-Path $PSScriptRoot 'mvnw.cmd'
+
+# The AWS demo stack and its rough price, shown before anything is created (ADR-007).
+$demoStack = Join-Path 'infra' 'terraform' 'envs' 'dev'
+$demoCostPerHour = 'about $0.15-0.25 per hour while it runs, plus $0.67 per GB of logs'
+
+# The commit whose images a demo runs: -Tag, else the current commit (what push tagged them with).
+function Get-DemoTag {
+    if ($Tag) { return $Tag }
+    $revision = & git rev-parse --short HEAD
+    if ($LASTEXITCODE -ne 0) { Stop-Task 'git rev-parse failed: the demo deploys images tagged with a commit id.' }
+    return $revision
+}
+
+# One terraform output of the demo stack, as text.
+function Get-DemoOutput([string] $Name) {
+    $value = & terraform "-chdir=$demoStack" output -raw $Name
+    if ($LASTEXITCODE -ne 0 -or -not $value) { Stop-Task "terraform output $Name failed: is the demo stack initialised and applied?" }
+    return $value
+}
 
 # Every task runs from the repo root (mvnw, docker compose and .secrets use relative paths).
 # Push/Pop keeps the caller's current directory unchanged afterwards.
@@ -325,8 +352,8 @@ try {
 
         'push' {
             # Images for ECS: built for the CPU the task definitions ask for, tagged with the commit, named for the
-            # bootstrap's ECR repositories. This task only builds and tags. Logging in, pushing and deploying are
-            # printed for you to run (Claude never pushes or applies).
+            # bootstrap's ECR repositories. This task only builds and tags: logging in, pushing and deploying are
+            # printed, to be run by hand after a look at what's about to change.
             if (& git status --porcelain) {
                 Stop-Task 'push needs a clean working tree: ECR tags are immutable and must name a commit. Commit first.'
             }
@@ -497,6 +524,89 @@ try {
 
         # Deleting the cluster deletes its PVCs too: in-cluster data is dev scaffolding.
         'kind-down' { Invoke-Native kind @('delete', 'cluster', '--name', $kindCluster) }
+
+        'demo-up' {
+            $imageTag = Get-DemoTag
+            Write-Host "Demo with images $imageTag. Cost: $demoCostPerHour. Run .\tasks.ps1 demo-down when done." -ForegroundColor Yellow
+            $started = Get-Date
+
+            # 1. Everything except the five services (they'd fail at startup: their database roles don't exist yet).
+            #    Terraform shows the plan and asks before creating anything.
+            Invoke-Native terraform @("-chdir=$demoStack", 'apply', "-var=image_tag=$imageTag", '-var=run_services=false')
+
+            # 2. The one-off database setup task (envs/dev/data.tf): roles and databases for the four services.
+            $region = Get-DemoOutput 'region'
+            $cluster = Get-DemoOutput 'cluster_name'
+            $dbInit = (& terraform "-chdir=$demoStack" output -json db_init) | ConvertFrom-Json
+            $network = "awsvpcConfiguration={subnets=[$($dbInit.subnets -join ',')],securityGroups=[$($dbInit.security_group)],assignPublicIp=ENABLED}"
+            Write-Host 'Running the database setup task...'
+            $taskArn = & aws ecs run-task --region $region --cluster $cluster --task-definition $dbInit.task_definition `
+                --launch-type FARGATE --network-configuration $network --propagate-tags TASK_DEFINITION `
+                --query 'tasks[0].taskArn' --output text
+            if ($LASTEXITCODE -ne 0 -or -not $taskArn -or $taskArn -eq 'None') { Stop-Task 'aws ecs run-task failed for the database setup task.' }
+            Invoke-Native aws @('ecs', 'wait', 'tasks-stopped', '--region', $region, '--cluster', $cluster, '--tasks', $taskArn)
+            $exitCode = & aws ecs describe-tasks --region $region --cluster $cluster --tasks $taskArn `
+                --query 'tasks[0].containers[0].exitCode' --output text
+            if ($exitCode -ne '0') {
+                Stop-Task "Database setup failed (exit code $exitCode). Its log: aws logs tail $($dbInit.log_group) --region $region"
+            }
+
+            # 3. The services, now that their databases exist.
+            Invoke-Native terraform @("-chdir=$demoStack", 'apply', "-var=image_tag=$imageTag", '-var=run_services=true')
+
+            # 4. Stable = every service runs its desired count and the gateway passes the ALB's health check. The AWS
+            #    waiter gives up after 10 minutes; seven JVMs pulling images and running Flyway may need a second round.
+            $services = @((& terraform "-chdir=$demoStack" output -json service_names) | ConvertFrom-Json)
+            Write-Host "Waiting for $($services -join ', ')..."
+            for ($round = 1; ; $round++) {
+                & aws ecs wait services-stable --region $region --cluster $cluster --services @services
+                if ($LASTEXITCODE -eq 0) { break }
+                if ($round -ge 2) { Stop-Task "Services not stable after 20 minutes. See the ECS console's service events, or: aws logs tail /ecs/$cluster/<service> --region $region" }
+            }
+
+            $elapsed = (Get-Date) - $started
+            Write-Host "Demo up in $([int][Math]::Floor($elapsed.TotalMinutes)) min $($elapsed.Seconds) s: $(Get-DemoOutput 'alb_url') (test client Base URL)" -ForegroundColor Green
+            Write-Host "Running now: $demoCostPerHour. Run .\tasks.ps1 demo-down when done." -ForegroundColor Yellow
+        }
+
+        'demo-down' {
+            # destroy needs every required variable too; any valid tag works, nothing is deployed with it.
+            $imageTag = Get-DemoTag
+            $bootstrap = Join-Path 'infra' 'terraform' 'bootstrap'
+            $region = & terraform "-chdir=$bootstrap" output -raw region
+            if ($LASTEXITCODE -ne 0 -or -not $region) { Stop-Task "No outputs from ${bootstrap}: the region comes from the bootstrap." }
+
+            Invoke-Native terraform @("-chdir=$demoStack", 'destroy', "-var=image_tag=$imageTag")
+
+            # Anything still tagged Project=buzzer, Stack=dev is a leftover (the bootstrap is Stack=bootstrap). The
+            # tagging API lags behind deletions, so it's asked a few times before failing. Not leftovers: stopped ECS
+            # tasks and deregistered task definitions (both free, both kept by ECS for a while), and secrets already
+            # scheduled for deletion.
+            for ($attempt = 1; ; $attempt++) {
+                $arns = @((& aws resourcegroupstaggingapi get-resources --region $region `
+                    --tag-filters Key=Project,Values=buzzer Key=Stack,Values=dev `
+                    --query 'ResourceTagMappingList[].ResourceARN' --output json) | ConvertFrom-Json)
+                if ($LASTEXITCODE -ne 0) { Stop-Task 'aws resourcegroupstaggingapi get-resources failed: check for leftovers in the console.' }
+                $left = @($arns | Where-Object { $_ -and $_ -notmatch ':task/' -and $_ -notmatch ':task-definition/' } | Where-Object {
+                    if ($_ -notmatch ':secretsmanager:') { return $true }
+                    $deleted = & aws secretsmanager describe-secret --region $region --secret-id $_ --query DeletedDate --output text 2>$null
+                    return ($LASTEXITCODE -eq 0 -and $deleted -eq 'None')
+                })
+                if (-not $left) { break }
+                if ($attempt -ge 6) {
+                    Write-Host 'STILL THERE after destroy (and still billing, if billable):' -ForegroundColor Red
+                    $left | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+                    Stop-Task 'demo-down is NOT complete. Delete these by hand, or run demo-down again.'
+                }
+                Start-Sleep -Seconds 20
+            }
+            Write-Host 'Demo destroyed: nothing tagged Project=buzzer, Stack=dev is left. The bootstrap (state, images) stays.' -ForegroundColor Green
+        }
+
+        'demo-seed' {
+            & (Join-Path $PSScriptRoot 'tools' 'http' 'chaos-game.ps1') -BaseUrl (Get-DemoOutput 'alb_url')
+            exit $LASTEXITCODE
+        }
 
         'bench' {
             # -am builds the services' plain jars first (the classes under test). No tests: that's what build is for.
